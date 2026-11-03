@@ -1,0 +1,4 @@
+-r requirements.txt
+music21>=9
+pytest
+pyinstaller>=6.6

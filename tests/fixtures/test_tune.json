@@ -1,0 +1,227 @@
+{
+ "title": "Test Tune",
+ "composer": "realbook test suite",
+ "style": "Med. Swing",
+ "key": "F",
+ "time": "4/4",
+ "bars_per_line": 4,
+ "source": "Original melody written for the tests (not from any book)",
+ "bars": [
+  {
+   "chords": [
+    "Fmaj7"
+   ],
+   "notes": [
+    "4r",
+    "4A4",
+    "4C5",
+    "4E5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "A-7b5",
+    "D7b9"
+   ],
+   "notes": [
+    "2.Eb5",
+    "4D5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "G-7"
+   ],
+   "notes": [
+    "4Bb4",
+    "2.D5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "C7"
+   ],
+   "notes": [
+    "1C5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "F6"
+   ],
+   "notes": [
+    "4r",
+    "4F4",
+    "4A4",
+    "4C5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "D-7b5"
+   ],
+   "notes": [
+    "2.Ab4",
+    "4G4"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "G7"
+   ],
+   "notes": [
+    "2.B4",
+    "4D5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "G-7",
+    "C7"
+   ],
+   "notes": [
+    "2D5",
+    "2E4"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "Fmaj7"
+   ],
+   "notes": [
+    "4r",
+    "4A4",
+    "4C5",
+    "4E5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "A-7b5",
+    "D7b9"
+   ],
+   "notes": [
+    "2.Eb5",
+    "4D5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "G-7"
+   ],
+   "notes": [
+    "4Bb4",
+    "2.D5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "C7"
+   ],
+   "notes": [
+    "1C5"
+   ],
+   "double_bar_after": true
+  },
+  {
+   "chords": [
+    "C-7",
+    "F7"
+   ],
+   "notes": [
+    "4C5",
+    "4Eb5",
+    "4G5",
+    "4A4"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "Bb6",
+    "Bb-6"
+   ],
+   "notes": [
+    "2D5",
+    "2Db5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "A-7",
+    "D7"
+   ],
+   "notes": [
+    "4C5",
+    "4A4",
+    "4F#4",
+    "4A4"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "Ab-7",
+    "Eb7"
+   ],
+   "notes": [
+    "2Eb5",
+    "2Db5"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "G-7",
+    "C7"
+   ],
+   "notes": [
+    "2Bb4",
+    "2G4"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "Bb"
+   ],
+   "notes": [
+    "2.F4",
+    "4r"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "F6"
+   ],
+   "notes": [
+    "1F4~"
+   ],
+   "double_bar_after": false
+  },
+  {
+   "chords": [
+    "(G-7)",
+    "(C7)"
+   ],
+   "notes": [
+    "2.F4",
+    "4r"
+   ],
+   "double_bar_after": false
+  }
+ ]
+}
