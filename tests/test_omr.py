@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from realbook.engraver import lilypond_exe
 from realbook.omr.kern2song import harte_to_realbook, staves_to_song
 from realbook.omr.staves import crop, find_staves
 from realbook.song import from_dict, load
@@ -73,8 +74,6 @@ def test_conversion_applies_notation_rules():
 
 def _render_lead_sheet(song_path: Path, out_png: Path):
     """Engrave a plain lead sheet (melody + chord names, no tab) to stand in for a scanned page."""
-    import lilypond
-
     s = load(song_path)
     from realbook.render_ly import ly_dur, ly_pitch
 
@@ -87,7 +86,7 @@ def _render_lead_sheet(song_path: Path, out_png: Path):
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "t.ly"
         src.write_text(ly, encoding="utf-8")
-        subprocess.run([str(lilypond.executable()), "--png", "-dresolution=110", "-o", str(Path(td) / "t"), str(src)],
+        subprocess.run([lilypond_exe(), "--png", "-dresolution=110", "-o", str(Path(td) / "t"), str(src)],
                        capture_output=True, check=True)
         Path(td, "t.png").replace(out_png)
 

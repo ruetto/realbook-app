@@ -1,0 +1,63 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q tests
+
+      - name: Build app
+        run: |
+          pyinstaller --noconfirm packaging/RealBookGuitar.spec
+          python packaging/fix_timestamps.py dist/RealBookGuitar
+
+      - name: Self-test the built app
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\RealBookGuitar\RealBookGuitar.exe -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content dist\RealBookGuitar\selftest.txt
+          if ($p.ExitCode -ne 0) { throw "self-test failed" }
+          Remove-Item dist\RealBookGuitar\selftest.txt
+
+      - name: Build installer
+        shell: pwsh
+        env:
+          APP_VERSION: "0.1.${{ github.run_number }}"
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { choco install innosetup -y --no-progress; & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss }
+
+      - name: Publish as the latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Real Book Guitar (latest build ${{ github.run_number }})"
+          body: |
+            Download **RealBookGuitar-Setup.exe** below and run it. No administrator rights needed.
+            Windows may warn that the app is from an unknown publisher: click "More info", then "Run anyway".
+            Built from commit ${{ github.sha }}.
+          files: dist/RealBookGuitar-Setup.exe
+          make_latest: true
+          prerelease: false

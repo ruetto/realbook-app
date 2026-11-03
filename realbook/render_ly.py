@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .chords import Chord
+from .engraver import lilypond_exe
 from .pitch import Pitch
 from .song import Song
 from .tab import MelodyEvent, Placement, finger_melody
@@ -207,7 +208,8 @@ def to_lilypond(arr: Arrangement) -> str:
     tuning_ly = " ".join(_ly_tuning_note(m) for m in tuning)
     tuning_txt = " ".join(NOTE_NAMES[m % 12] for m in tuning)
     clef = '"treble_8"' if shift <= -12 else '"treble"'
-    sub = f"{song.style} · Key of {str(song.key).replace('b', '♭').replace('#', '♯')}"
+    key_txt = "Key of " + str(song.key).replace("b", "♭").replace("#", "♯")
+    sub = f"{song.style} · {key_txt}" if song.style else key_txt
     sub2 = f"{STYLES[arr.style]} · {arr.tuning_name.replace('-', ' ').capitalize()} tuning ({tuning_txt})"
     return f"""\\version "{LY_VERSION}"
 #(set-global-staff-size 17)
@@ -264,9 +266,7 @@ _RUN = dict(capture_output=True, text=True, encoding="utf-8", errors="replace",
 
 def compile_pdf(ly_source: str, out_pdf: Path, png_preview: Path | None = None, strict: bool = True) -> list[str]:
     """Engrave to PDF. strict=True turns any LilyPond warning into an error; otherwise warnings are returned."""
-    import lilypond
-
-    exe = str(lilypond.executable())
+    exe = lilypond_exe()
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "song.ly"
         src.write_text(ly_source, encoding="utf-8")
