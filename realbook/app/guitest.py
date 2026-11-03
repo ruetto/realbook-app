@@ -47,6 +47,8 @@ def _engrave_book(pdf: Path):
         book.insert_pdf(music)
         book.insert_pdf(music)
         book.save(str(pdf))
+        book.close()
+        music.close()  # Windows can't delete the temporary folder while a file in it is open
 
 
 def run() -> int:

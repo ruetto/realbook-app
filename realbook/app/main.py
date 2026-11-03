@@ -496,7 +496,8 @@ class ImportDialog(QDialog):
         self.setWindowTitle("Import a Real Book")
         self.resize(720, 620)
         self.pdf_path = pdf_path
-        self.page_count = pymupdf.open(pdf_path).page_count
+        with pymupdf.open(pdf_path) as d:
+            self.page_count = d.page_count
         self.book_title = QLineEdit(Path(pdf_path).stem)
         self.method = QComboBox()
         self.bookmarks = plan_from_bookmarks(pdf_path)

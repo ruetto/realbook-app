@@ -26,8 +26,9 @@ class PlannedSong:
 def plan_from_bookmarks(pdf_path: str) -> list[PlannedSong]:
     import pymupdf
 
-    doc = pymupdf.open(pdf_path)
-    toc = [(lvl, title.strip(), page) for lvl, title, page in doc.get_toc(simple=True) if page >= 1]
+    with pymupdf.open(pdf_path) as doc:
+        toc = [(lvl, title.strip(), page) for lvl, title, page in doc.get_toc(simple=True) if page >= 1]
+        page_count = doc.page_count
     if not toc:
         return []
     # use the deepest level that has many entries (song titles), not section headings like "A", "B"
@@ -39,7 +40,7 @@ def plan_from_bookmarks(pdf_path: str) -> list[PlannedSong]:
     entries.sort(key=lambda e: e[1])
     out = []
     for i, (title, page) in enumerate(entries):
-        nxt = entries[i + 1][1] if i + 1 < len(entries) else doc.page_count + 1
+        nxt = entries[i + 1][1] if i + 1 < len(entries) else page_count + 1
         last = max(page, nxt - 1)
         out.append(PlannedSong(title, page, min(last, page + 3)))  # cap: a song rarely spans more than 4 pages
     return out
@@ -48,7 +49,8 @@ def plan_from_bookmarks(pdf_path: str) -> list[PlannedSong]:
 def plan_one_per_page(pdf_path: str, first: int = 1, last: int | None = None) -> list[PlannedSong]:
     import pymupdf
 
-    n = pymupdf.open(pdf_path).page_count
+    with pymupdf.open(pdf_path) as d:
+        n = d.page_count
     last = min(last or n, n)
     return [PlannedSong(f"Page {p}", p, p) for p in range(first, last + 1)]
 
@@ -204,6 +206,7 @@ class ImportJob:
                 summary["failed"] += 1
                 summary["failed_titles"].append(ps.title)
                 self.log(f"'{ps.title}' (pages {ps.first_page}-{ps.last_page}) FAILED:\n{traceback.format_exc()}")
+        doc.close()  # release the PDF so it can be moved or opened elsewhere
         book = self.lib.load_book(self.book_id) or {}
         book["no_music"] = sorted(no_music)
         self.lib.save_book(self.book_id, book)
