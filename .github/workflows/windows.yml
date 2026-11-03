@@ -49,6 +49,20 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss
           if ($LASTEXITCODE -ne 0) { choco install innosetup -y --no-progress; & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss }
 
+      - name: Install with the installer and test the installed app
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\rbg-installed"
+          $p = Start-Process -FilePath dist\RealBookGuitar-Setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer failed" }
+          Get-Content "$dir\selftest.txt"   # written by the warm-up step the installer runs
+          $p = Start-Process -FilePath "$dir\RealBookGuitar.exe" -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content "$dir\selftest.txt"
+          if ($p.ExitCode -ne 0) { throw "self-test of the installed app failed" }
+          $p = Start-Process -FilePath "$dir\RealBookGuitar.exe" -ArgumentList "--gui-selftest" -Wait -PassThru
+          Get-Content "$dir\gui-selftest.txt"
+          if ($p.ExitCode -ne 0) { throw "window test of the installed app failed" }
+
       - name: Publish as the latest release
         uses: softprops/action-gh-release@v2
         with:

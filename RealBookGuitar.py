@@ -65,6 +65,12 @@ def selftest() -> int:
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(selftest())
+    if "--gui-selftest" in sys.argv:
+        from realbook.app.guitest import run
+
+        sys.exit(run())
+    if "--warmup" in sys.argv:  # run by the installer so the first engraving isn't slow
+        sys.exit(selftest())
     from realbook.app.main import main
 
-    main()
+    sys.exit(main())

@@ -239,3 +239,14 @@ def test_triads_and_optional_chords_are_voiced():
         arr = arrange(s, style, "standard")
         syms = [ch.symbol for _, ch, _ in arr.voicings]
         assert "Bb" in syms and "(G-7)" in syms
+
+
+def test_song_without_chords_still_engraves(tmp_path):
+    from realbook.render_ly import compile_pdf, to_lilypond
+    from realbook.song import from_dict
+
+    d = {"title": "No chords", "key": "F", "time": "4/4",
+         "bars": [{"chords": [], "notes": ["4r", "4A4", "4C5", "4E5"]}, {"chords": [], "notes": ["1F4"]}]}
+    for style in STYLES:
+        compile_pdf(to_lilypond(arrange(from_dict(d), style, "standard")), tmp_path / f"{style}.pdf")
+        assert (tmp_path / f"{style}.pdf").stat().st_size > 1000

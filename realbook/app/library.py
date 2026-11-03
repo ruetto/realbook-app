@@ -15,24 +15,26 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-def default_root() -> Path:
-    docs = Path(os.path.expanduser("~")) / "Documents"
-    return (docs if docs.exists() else Path(os.path.expanduser("~"))) / "Real Book Guitar"
-
-
 DEFAULT_SETTINGS = {
-    "library": None,
+    "library": None,  # chosen by the user on first start; never picked silently
     "style": "drop3",
     "tuning": "standard",
     "open_strings": "avoid",
     "position": "auto",
+    "last_pdf_dir": "",
+    "last_export_dir": "",
 }
 
 
-def settings_file() -> Path:
-    base = Path(os.environ.get("APPDATA", Path.home() / ".config")) / "RealBookGuitar"
+def settings_dir() -> Path:
+    override = os.environ.get("RBG_SETTINGS_DIR")
+    base = Path(override) if override else Path(os.environ.get("APPDATA", Path.home() / ".config")) / "RealBookGuitar"
     base.mkdir(parents=True, exist_ok=True)
-    return base / "settings.json"
+    return base
+
+
+def settings_file() -> Path:
+    return settings_dir() / "settings.json"
 
 
 def load_settings() -> dict:
@@ -41,13 +43,30 @@ def load_settings() -> dict:
         s.update(json.loads(settings_file().read_text(encoding="utf-8")))
     except (OSError, ValueError):
         pass
-    if not s["library"]:
-        s["library"] = str(default_root())
+    if os.environ.get("RBG_LIBRARY"):
+        s["library"] = os.environ["RBG_LIBRARY"]
     return s
 
 
 def save_settings(s: dict) -> None:
     settings_file().write_text(json.dumps(s, indent=1), encoding="utf-8")
+
+
+def check_writable(folder: Path) -> str | None:
+    """Return None if the app can create and write files in folder, else a plain explanation."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe = folder / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return None
+    except OSError as e:
+        hint = ""
+        if os.name == "nt" and "Documents" in str(folder):
+            hint = (" Windows Security's “Controlled folder access” blocks unknown apps from writing in "
+                    "Documents; either choose another folder or allow Real Book Guitar in "
+                    "Windows Security → Ransomware protection → Allow an app.")
+        return f"Can't write in {folder} ({e.strerror or e}).{hint}"
 
 
 def slug(text: str) -> str:

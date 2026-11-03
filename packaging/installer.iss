@@ -30,4 +30,6 @@ Name: "{userdesktop}\Real Book Guitar"; Filename: "{app}\RealBookGuitar.exe"; Ta
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Run]
+; LilyPond builds its font cache on first use (can take a minute on Windows); do it now, not on first print
+Filename: "{app}\RealBookGuitar.exe"; Parameters: "--warmup"; StatusMsg: "Preparing the music engraver (about a minute)..."; Flags: runhidden waituntilterminated
 Filename: "{app}\RealBookGuitar.exe"; Description: "Start Real Book Guitar"; Flags: nowait postinstall skipifsilent

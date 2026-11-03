@@ -87,5 +87,33 @@ class ImportThread(_Thread):
         self.job.cancelled = True
 
 
-class Signals(QObject):
-    pass
+class JobKeeper:
+    """Holds every background job until it has really finished.
+
+    Dropping the last reference to a running QThread destroys it mid-run and Qt aborts the whole
+    program, which is what crashed the review screen. Jobs live here until 'finished' fires.
+    """
+
+    def __init__(self):
+        self.jobs: set = set()
+
+    def start(self, job: QThread) -> QThread:
+        self.jobs.add(job)
+        job.finished.connect(lambda j=job: self._done(j))
+        job.start()
+        return job
+
+    def _done(self, job):
+        # release our hold only; Python frees the object once nothing else refers to it.
+        # (deleteLater would destroy it while a view still holds it, which also crashes.)
+        self.jobs.discard(job)
+
+    def busy(self) -> bool:
+        return any(j.isRunning() for j in self.jobs)
+
+    def wait_all(self, ms: int = 30000):
+        for j in list(self.jobs):
+            j.wait(ms)
+
+
+KEEPER = JobKeeper()

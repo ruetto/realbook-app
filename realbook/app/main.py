@@ -1,12 +1,16 @@
 """Real Book Guitar: the desktop app."""
 from __future__ import annotations
 
+import faulthandler
+import logging
 import os
 import shutil
 import sys
+import threading
+import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QSize, Qt, QtMsgType, QTimer, QUrl, qInstallMessageHandler
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QImage, QPainter, QPixmap
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -20,8 +24,8 @@ from PySide6.QtWidgets import (
 from ..voicings import STYLES, TUNINGS
 from . import editing
 from .importer import ImportJob, PlannedSong, plan_from_bookmarks, plan_from_index, plan_one_per_page
-from .library import Library, load_settings, save_settings
-from .workers import ImportThread, PreviewJob, RenderJob
+from .library import Library, check_writable, load_settings, save_settings, settings_dir
+from .workers import KEEPER, ImportThread, PreviewJob, RenderJob
 
 APP_NAME = "Real Book Guitar"
 KEYS = ["Original", "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
@@ -66,6 +70,7 @@ class SongView(QWidget):
         self.song_id = None
         self.song = None
         self.job = None
+        self._request = None
         s = win.settings
         self.style = _combo(STYLE_NAMES, s["style"])
         self.key = _combo(KEYS, "Original")
@@ -140,13 +145,39 @@ class SongView(QWidget):
             self.banner.show()
         else:
             self.banner.hide()
-        self.status.setText("Engraving…")
-        self.job = RenderJob(self.song, self.options(), self.win.lib.root / "cache")
-        self.job.done.connect(self._rendered)
-        self.job.failed.connect(lambda msg: self.status.setText("Could not engrave this song: " + msg.splitlines()[0]))
-        self.job.start()
+        self.status.setText("Engraving… (the very first time can take a minute while fonts are prepared)"
+                            if not self.win.settings.get("engraved_once") else "Engraving…")
+        self._request = (dict(self.song), self.options(), self.song_id)
+        if self.job is not None and self.job.isRunning():
+            return  # the running job will pick up the newest request when it finishes
+        self._start_job()
 
-    def _rendered(self, path: str, warnings: list):
+    def busy(self) -> bool:
+        return (self.job is not None and self.job.isRunning()) or self._request is not None
+
+    def _start_job(self):
+        song, opts, sid = self._request
+        self._request = None
+        job = RenderJob(song, opts, self.win.lib.root / "cache")
+        job.done.connect(lambda path, warnings, sid=sid, opts=opts: self._rendered(path, warnings, sid, opts))
+        job.failed.connect(lambda msg, sid=sid: self._failed(msg, sid))
+        job.finished.connect(self._job_finished)
+        self.job = KEEPER.start(job)
+
+    def _job_finished(self):
+        if self._request is not None:
+            self._start_job()
+
+    def _failed(self, msg: str, sid):
+        if sid == self.song_id and self._request is None:
+            self.status.setText("Could not engrave this song: " + msg.splitlines()[0])
+
+    def _rendered(self, path: str, warnings: list, sid=None, opts=None):
+        if sid != self.song_id or opts != self.options() or self._request is not None:
+            return  # an older request; a newer one is on its way
+        if not self.win.settings.get("engraved_once"):
+            self.win.settings["engraved_once"] = True
+            save_settings(self.win.settings)
         self.pdf_path = path
         self.doc.load(path)
         self.status.setText("" if not warnings else
@@ -157,9 +188,13 @@ class SongView(QWidget):
             return
         o = self.options()
         name = f"{self.song.get('title', 'song')} ({o['key'] if o['key'] != 'Original' else self.song.get('key')}, {STYLE_NAMES[o['style']]}).pdf"
-        target, _ = QFileDialog.getSaveFileName(self, "Save PDF", str(Path.home() / "Documents" / name), "PDF (*.pdf)")
+        start = self.win.settings.get("last_export_dir", "")
+        target, _ = QFileDialog.getSaveFileName(self, "Save PDF", str(Path(start) / name) if start else name,
+                                                "PDF (*.pdf)")
         if target:
             shutil.copyfile(self.pdf_path, target)
+            self.win.settings["last_export_dir"] = str(Path(target).parent)
+            save_settings(self.win.settings)
 
     def print_pdf(self):
         if not self.pdf_path:
@@ -347,8 +382,13 @@ class ReviewView(QWidget):
         self._save_timer.setInterval(600)
         self._save_timer.timeout.connect(self._save_and_refresh)
         self.prev_job = None
+        self._prev_request = None
+        self._prev_gen = 0
 
     def show_song(self, song_id: str):
+        if self._save_timer.isActive():  # save pending edits of the previous song first
+            self._save_timer.stop()
+            self.win.lib.save_song(self.song_id, self.song)
         self.song_id = song_id
         self.song = self.win.lib.load_song(song_id)
         for w, v in ((self.title, self.song.get("title", "")), (self.composer, self.song.get("composer", "")),
@@ -384,10 +424,35 @@ class ReviewView(QWidget):
             return
         data = dict(self.song)
         data["systems"] = [p.system for p in self.panels]
-        self.prev_job = PreviewJob(data, self.win.lib.root / "cache" / "preview" / self.song_id)
-        self.prev_job.done.connect(lambda paths: [p.set_preview(x) for p, x in zip(self.panels, paths)])
-        self.prev_job.failed.connect(lambda m: [p.set_preview("") for p in self.panels])
-        self.prev_job.start()
+        self._prev_gen += 1
+        self._prev_request = (data, self.song_id, self._prev_gen)
+        if self.prev_job is not None and self.prev_job.isRunning():
+            return
+        self._start_previews()
+
+    def busy(self) -> bool:
+        return (self._save_timer.isActive() or (self.prev_job is not None and self.prev_job.isRunning())
+                or self._prev_request is not None)
+
+    def _start_previews(self):
+        data, sid, gen = self._prev_request
+        self._prev_request = None
+        job = PreviewJob(data, self.win.lib.root / "cache" / "preview" / sid / str(gen))
+        job.done.connect(lambda paths, sid=sid, gen=gen: self._previews_done(paths, sid, gen))
+        job.failed.connect(lambda m, sid=sid, gen=gen: self._previews_done([], sid, gen))
+        job.finished.connect(lambda: self._start_previews() if self._prev_request is not None else None)
+        self.prev_job = KEEPER.start(job)
+
+    def _previews_done(self, paths: list, sid: str, gen: int):
+        if sid != self.song_id or gen != self._prev_gen:
+            return  # the song changed or a newer edit is being drawn
+        for i, p in enumerate(self.panels):
+            p.set_preview(paths[i] if i < len(paths) else "")
+        # tidy older preview images of this song
+        root = self.win.lib.root / "cache" / "preview" / sid
+        for d in root.glob("*"):
+            if d.is_dir() and d.name != str(gen):
+                shutil.rmtree(d, ignore_errors=True)
 
     def changed(self):
         self._update_status()
@@ -555,12 +620,19 @@ class SettingsDialog(QDialog):
         form.addRow("Default tuning", self.tuning)
         form.addRow("Open strings in tab", self.open_strings)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
+        bb.accepted.connect(self._ok)
         bb.rejected.connect(self.reject)
         form.addRow(bb)
 
+    def _ok(self):
+        problem = check_writable(Path(self.lib.text()))
+        if problem:
+            QMessageBox.warning(self, "Can't use that folder", problem)
+            return
+        self.accept()
+
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self, "Library folder", self.lib.text())
+        d = QFileDialog.getExistingDirectory(self, "Library folder", self.lib.text() or "")
         if d:
             self.lib.setText(d)
 
@@ -668,6 +740,9 @@ class MainWindow(QMainWindow):
         a = QAction("Show import log", self)
         a.triggered.connect(self.show_log)
         h.addAction(a)
+        a = QAction("Show app log", self)
+        a.triggered.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings_dir() / "app.log"))))
+        h.addAction(a)
         a = QAction("About", self)
         a.triggered.connect(self.about)
         h.addAction(a)
@@ -748,9 +823,12 @@ class MainWindow(QMainWindow):
         if self.import_thread and self.import_thread.isRunning():
             QMessageBox.information(self, "Import running", "Wait for the current import to finish, or stop it first.")
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a Real Book PDF", str(Path.home()), "PDF (*.pdf)")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a Real Book PDF", self.settings.get("last_pdf_dir", ""),
+                                              "PDF (*.pdf)")
         if not path:
             return
+        self.settings["last_pdf_dir"] = str(Path(path).parent)
+        save_settings(self.settings)
         dlg = ImportDialog(self, path)
         if dlg.exec() != QDialog.Accepted:
             return
@@ -760,22 +838,31 @@ class MainWindow(QMainWindow):
                                 "The song list was empty, so nothing was imported. Open the PDF again and choose "
                                 "“One song per page”, or load an index file.")
             return
-        self.import_book_title = dlg.book_title.text().strip() or Path(path).stem
-        job = ImportJob(self.lib, path, self.import_book_title, plan)
+        self.start_import(path, dlg.book_title.text().strip() or Path(path).stem, plan)
+
+    def start_import(self, path: str, title: str, plan: list):
+        log.info("import requested: %s, %d songs, library %s", path, len(plan), self.lib.root)
+        self.import_book_title = title
+        job = ImportJob(self.lib, path, title, plan)
         self.import_thread = ImportThread(job)
         self.import_thread.progress.connect(self._import_progress)
         self.import_thread.line.connect(self._import_line)
         self.import_thread.song_added.connect(lambda sid: self.refresh_list())
         self.import_thread.summary.connect(self._import_summary)
-        self.import_thread.failed.connect(lambda msg: QMessageBox.warning(self, "Import stopped", msg))
+        self.import_thread.failed.connect(self._import_failed)
         self.import_thread.finished.connect(self._import_finished)
-        self.imp_title.setText(f"Importing “{self.import_book_title}”")
+        self.imp_title.setText(f"Importing “{title}”")
         self.imp_detail.setText("Starting…")
         self.prog.setRange(0, 0)  # busy until the first song starts
         self.cancel_btn.setEnabled(True)
         self.imp_panel.show()
         self.import_thread.start()
         self.refresh_list()
+
+    def _import_failed(self, msg: str):
+        log.error("import failed: %s", msg)
+        QMessageBox.warning(self, "Import stopped", "The import stopped because of an error:\n\n" + msg.splitlines()[0]
+                            + "\n\nDetails are in the app log (Help → Show app log).")
 
     @staticmethod
     def _fmt_time(sec: float) -> str:
@@ -859,17 +946,84 @@ class MainWindow(QMainWindow):
         if self.import_thread and self.import_thread.isRunning():
             self.import_thread.cancel()
             self.import_thread.wait(30000)
+        KEEPER.wait_all(30000)
         super().closeEvent(ev)
+
+
+log = logging.getLogger("realbook")
+
+
+def _setup_logging():
+    """Everything that goes wrong ends up in app.log (Help → Show app log), including hard crashes."""
+    path = settings_dir() / "app.log"
+    try:
+        if path.exists() and path.stat().st_size > 2_000_000:
+            path.replace(path.with_suffix(".old.log"))
+    except OSError:
+        pass
+    logging.basicConfig(filename=str(path), level=logging.INFO, encoding="utf-8",
+                        format="%(asctime)s %(levelname)s %(message)s")
+    global _crash_file
+    _crash_file = open(path, "a", encoding="utf-8")  # kept open for faulthandler
+    faulthandler.enable(_crash_file)
+
+    def hook(kind, value, tb):
+        text = "".join(traceback.format_exception(kind, value, tb))
+        log.error("unhandled error:\n%s", text)
+        app = QApplication.instance()
+        if app:
+            QMessageBox.critical(None, APP_NAME, "Something went wrong:\n\n" + str(value)
+                                 + "\n\nThe details are in the app log (Help → Show app log).")
+
+    sys.excepthook = hook
+    threading.excepthook = lambda a: hook(a.exc_type, a.exc_value, a.exc_traceback)
+
+    def qt_messages(mode, ctx, msg):
+        if mode in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+            log.warning("Qt: %s", msg)
+
+    qInstallMessageHandler(qt_messages)
+    log.info("started %s (python %s, %s)", APP_NAME, sys.version.split()[0], sys.platform)
+
+
+def choose_library(parent, settings: dict) -> bool:
+    """Ask where the song library should live. Returns False if the person cancels."""
+    QMessageBox.information(
+        parent, APP_NAME,
+        "Choose a folder for your song library.\n\nThe app keeps the songs it reads, the scanned lines and your "
+        "corrections there. Pick an empty folder, or create one in the next window. Your Real Book PDFs are not "
+        "moved or changed.")
+    while True:
+        d = QFileDialog.getExistingDirectory(parent, "Folder for your song library", settings.get("library") or "")
+        if not d:
+            return False
+        problem = check_writable(Path(d))
+        if problem:
+            QMessageBox.warning(parent, "Can't use that folder", problem)
+            continue
+        settings["library"] = d
+        save_settings(settings)
+        log.info("library folder set to %s", d)
+        return True
 
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyleSheet(STYLE_SHEET)
+    _setup_logging()
+    settings = load_settings()
+    if not settings.get("library") or check_writable(Path(settings["library"])):
+        if settings.get("library"):
+            QMessageBox.warning(None, APP_NAME, check_writable(Path(settings["library"])))
+        if not choose_library(None, settings):
+            return 0
     w = MainWindow()
     w.show()
-    sys.exit(app.exec())
+    code = app.exec()
+    log.info("closed")
+    return code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

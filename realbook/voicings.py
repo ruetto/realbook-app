@@ -258,6 +258,8 @@ def _move_cost(a: Voicing, b: Voicing) -> float:
 
 def voice_progression(chords: list[Chord], style: str, tuning: list[int]) -> list[Voicing]:
     FALLBACKS.clear()
+    if not chords:  # e.g. a page where no chord symbols were read: melody and tab only
+        return []
     cands = []
     for c in chords:
         cs = candidates(c, style, tuning)

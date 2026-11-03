@@ -1,0 +1,8 @@
+    0.5s  test book engraved
+    1.8s  progress shown: 'Reading “Page 2”: page 2, line 1 of 5'
+   24.3s  import finished: '2 songs read · 1 pages without music skipped (cover, contents…)'; songs: ['Page 2', 'Page 3']
+   25.3s  review: 5 lines with scans and previews
+   26.9s  lead sheet: 1 page(s), style drop3, key Original
+   29.6s  edits saved and previews redrawn
+   32.3s  switching songs while jobs run: ok
+PASS
