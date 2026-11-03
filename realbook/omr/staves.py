@@ -19,6 +19,59 @@ class Staff:
     x0: int
     x1: int
     crop_box: tuple[int, int, int, int]  # left, top, right, bottom
+    barlines: int = 0
+    ink: float = 0.0  # share of ink between the staff lines (lines themselves excluded)
+    role: str = "melody"  # "melody", or "lower" for the second staff of a bracketed pair (bass line etc.)
+
+
+def count_barlines(ink: np.ndarray, st: "Staff") -> int:
+    """Vertical strokes that cover the whole staff height but don't run on through it in both directions
+    (big title lettering does; barlines and stems don't)."""
+    top, bot, s = st.lines[0], st.lines[-1], st.spacing
+    tol = max(1, int(0.3 * s))
+    cols = []
+    for x in range(st.x0, st.x1 + 1):
+        win = ink[:, max(0, x - 1): x + 2].any(1)
+        span = win[max(0, top - tol): bot + tol + 1].mean()
+        above = win[max(0, int(top - 1.5 * s)): max(0, top - tol)].mean() if top - tol > 0 else 0.0
+        below = win[bot + tol + 1: int(bot + 1.5 * s)].mean() if bot + tol + 1 < len(win) else 0.0
+        if span >= 0.8 and not (above >= 0.6 and below >= 0.6):
+            cols.append(x)
+    groups = 0
+    last = None
+    for c in cols:
+        if last is None or c - last > max(2, int(0.8 * s)):
+            groups += 1
+        last = c
+    return groups
+
+
+def inner_ink(ink: np.ndarray, st: "Staff") -> float:
+    top, bot = st.lines[0], st.lines[-1]
+    band = ink[top: bot + 1, st.x0: st.x1 + 1].copy()
+    for line in st.lines:
+        band[max(0, line - top - 1): line - top + 2, :] = False
+    return float(band.mean()) if band.size else 0.0
+
+
+def looks_like_music(st: "Staff") -> bool:
+    """Page-geometry test. Music staves have barlines and modest ink between the lines; the blank printed
+    staff a Real Book title is written over has 0-1 barlines and lots of ink (big lettering).
+    Measured: music 3-18 barlines and 6-18 % ink; titles 0-1 barlines and 19-25 % ink.
+    Staves that fail this are not dropped here: the importer keeps them only if the recognizer reads them
+    confidently (music lines score >= 0.95 mean confidence, titles 0.79-0.86)."""
+    return st.barlines >= 3 and st.ink < 0.19
+
+
+def bracketed(ink: np.ndarray, a: "Staff", b: "Staff") -> bool:
+    """True if a brace/bracket or system barline joins staff a to the staff b below it."""
+    s = a.spacing
+    x0 = min(a.x0, b.x0)
+    best = 0.0
+    for x in range(max(0, int(x0 - 3 * s)), int(x0 + 2 * s)):
+        col = ink[a.lines[0]: b.lines[-1] + 1, max(0, x - 1): x + 2].any(1)
+        best = max(best, float(col.mean()))
+    return best >= 0.85
 
 
 def _peaks(profile: np.ndarray, thresh: float) -> list[int]:
@@ -96,6 +149,15 @@ def find_staves(page: Image.Image, chord_room: float = 6.5, below: float = 3.0) 
         top = int(max(0, top_line - chord_room * s))
         bottom = int(min(h, bot_line + below * s))
         staves.append(Staff(lines, s, int(x0), int(x1), (max(0, int(x0) - 4), top, min(w, int(x1) + 4), bottom)))
+    for st in staves:
+        st.barlines = count_barlines(ink, st)
+        st.ink = inner_ink(ink, st)
+    # a staff with no barlines and little ink is empty music paper: drop it outright
+    staves = [st for st in staves if not (st.barlines <= 1 and st.ink < 0.03)]
+    # pairs joined by a bracket (melody + bass line): only the top one is a lead-sheet line
+    for a, b in zip(staves, staves[1:]):
+        if a.role == "melody" and bracketed(ink, a, b):
+            b.role = "lower"
     return staves
 
 

@@ -15,7 +15,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QFont, QImage, QPainter, QP
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem,
     QTabWidget, QVBoxLayout, QWidget,
@@ -415,8 +415,11 @@ class ReviewView(QWidget):
     def _update_status(self):
         flagged = sum(1 for b in self.song.get("bars", []) if b.get("doubts"))
         reviewed = self.song.get("review", {}).get("status") == "reviewed"
+        note = self.song.get("review", {}).get("note", "")
         self.status.setText(("Checked." if reviewed else "Not checked yet.") +
-                            (f"  {flagged} bar(s) flagged." if flagged else "  No bars flagged."))
+                            (f"  {flagged} bar(s) flagged." if flagged else "  No bars flagged.") +
+                            (f"\n{note}" if note else ""))
+        self.status.setWordWrap(True)
         self.done_btn.setText("Mark as not checked" if reviewed else "Mark song as checked")
 
     def _previews(self):
@@ -538,6 +541,9 @@ class ImportDialog(QDialog):
         rng.addWidget(self.last)
         rng.addStretch(1)
         form.addRow("Import", rng)
+        self.reread = QCheckBox("Read songs again that are already in the library (replaces them; songs you've "
+                                "marked as checked are kept)")
+        form.addRow("", self.reread)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("Start import")
         buttons.accepted.connect(self.accept)
@@ -839,12 +845,12 @@ class MainWindow(QMainWindow):
                                 "The song list was empty, so nothing was imported. Open the PDF again and choose "
                                 "“One song per page”, or load an index file.")
             return
-        self.start_import(path, dlg.book_title.text().strip() or Path(path).stem, plan)
+        self.start_import(path, dlg.book_title.text().strip() or Path(path).stem, plan, dlg.reread.isChecked())
 
-    def start_import(self, path: str, title: str, plan: list):
+    def start_import(self, path: str, title: str, plan: list, reread: bool = False):
         log.info("import requested: %s, %d songs, library %s", path, len(plan), self.lib.root)
         self.import_book_title = title
-        job = ImportJob(self.lib, path, title, plan)
+        job = ImportJob(self.lib, path, title, plan, reread)
         self.import_thread = ImportThread(job)
         self.import_thread.progress.connect(self._import_progress)
         self.import_thread.line.connect(self._import_line)

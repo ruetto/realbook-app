@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from ..omr.kern2song import staves_to_song
-from ..omr.staves import crop, find_staves
+from ..omr.staves import crop, find_staves, looks_like_music
 from .library import Library, slug
 
 
@@ -112,12 +112,14 @@ def song_id_for(book_id: str, ps: PlannedSong) -> str:
 class ImportJob:
     """Reads planned songs one by one. Call run(); it reports progress through callbacks."""
 
-    def __init__(self, library: Library, pdf_path: str, book_title: str, plan: list[PlannedSong]):
+    def __init__(self, library: Library, pdf_path: str, book_title: str, plan: list[PlannedSong],
+                 reread: bool = False):
         self.lib = library
         self.pdf = str(pdf_path)
         self.book_id = slug(book_title)
         self.book_title = book_title
         self.plan = plan
+        self.reread = reread  # read songs again even if already in the library (replaces them)
         self.cancelled = False
 
     def save_book(self):
@@ -125,6 +127,12 @@ class ImportJob:
             "title": self.book_title, "pdf": self.pdf,
             "plan": [{"title": p.title, "first_page": p.first_page, "last_page": p.last_page} for p in self.plan],
         })
+
+    def _checked(self, sid: str) -> bool:
+        try:
+            return self.lib.load_song(sid).get("review", {}).get("status") == "reviewed"
+        except (OSError, ValueError):
+            return False
 
     def log(self, msg: str) -> None:
         try:
@@ -155,8 +163,17 @@ class ImportJob:
         self.log(f"import of '{self.book_title}' ({self.pdf}): {len(self.plan)} songs planned")
         rec = recognizer or default_recognizer()
         doc = pymupdf.open(self.pdf)
+        if self.reread:
+            done_ids = {song_id_for(self.book_id, p) for p in self.plan}
+            self.reread_ids = {sid for sid in done_ids if self.lib.has_song(sid)}
+            no_music -= {p.first_page for p in self.plan}
+        else:
+            self.reread_ids = set()
         todo = [p for p in self.plan
-                if not self.lib.has_song(song_id_for(self.book_id, p)) and p.first_page not in no_music]
+                if (self.reread or not self.lib.has_song(song_id_for(self.book_id, p)))
+                and p.first_page not in no_music]
+        # a song read again only replaces the old one once it's done; a song already checked is kept
+        todo = [p for p in todo if not (self.reread and self._checked(song_id_for(self.book_id, p)))]
         pages_total = sum(p.last_page - p.first_page + 1 for p in todo)
         pages_done = 0
         music_pages, music_secs = 0, 0.0  # estimate from pages that actually had music, not quick blank pages
@@ -167,21 +184,37 @@ class ImportJob:
             on_progress(k, len(todo), ps.title, eta)
             sid = song_id_for(self.book_id, ps)
             try:
-                kerns, systems = [], []
+                kerns, systems, notes = [], [], []
+                if self.reread:
+                    for old_crop in self.lib.root.joinpath("crops").glob(f"{sid}_*.png"):
+                        old_crop.unlink(missing_ok=True)
                 for page_no in range(ps.first_page, ps.last_page + 1):
                     if self.cancelled:
                         break
                     t_page = time.time()
                     img = page_image(doc, page_no)
-                    staves = find_staves(img)
+                    found = find_staves(img)
+                    lower = sum(1 for st in found if st.role == "lower")
+                    staves = [st for st in found if st.role == "melody"]
+                    if lower:
+                        notes.append(f"Page {page_no} is written on paired staves; only the top staff of each "
+                                     f"pair (the melody) was read, not the {lower} staff/staves below it.")
                     for li, st in enumerate(staves):
                         if self.cancelled:
                             break
                         on_line(page_no, li + 1, len(staves))
                         c = crop(img, st)
+                        if looks_like_music(st):
+                            kern = rec.kern(c)
+                        else:  # maybe a title written over a blank staff: keep it only if it reads like music
+                            kern, confident = rec.kern_checked(c)
+                            if not confident:
+                                self.log(f"'{ps.title}' page {page_no}: skipped a line that isn't music "
+                                         f"(title or text; {st.barlines} barlines)")
+                                continue
                         n = len(systems)
                         c.save(self.lib.crop_path(sid, n))
-                        kerns.append(rec.kern(c))
+                        kerns.append(kern)
                         systems.append({"page": page_no, "box": list(st.crop_box),
                                         "crop": self.lib.crop_path(sid, n).name})
                     pages_done += 1
@@ -196,7 +229,14 @@ class ImportJob:
                     self.log(f"pages {ps.first_page}-{ps.last_page} ('{ps.title}'): no music found, skipped")
                     continue
                 song = staves_to_song(kerns, ps.title, systems)
+                if self.reread and self.lib.has_song(sid):  # keep the title, composer and style already typed
+                    old = self.lib.load_song(sid)
+                    for k in ("title", "composer", "style"):
+                        if old.get(k):
+                            song[k] = old[k]
                 song.update({"book": self.book_id, "pages": list(range(ps.first_page, ps.last_page + 1))})
+                if notes:
+                    song["review"]["note"] = " ".join(notes)
                 self.lib.save_song(sid, song)
                 summary["imported"] += 1
                 self.log(f"'{ps.title}' (pages {ps.first_page}-{ps.last_page}): {len(systems)} lines, "

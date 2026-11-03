@@ -44,22 +44,35 @@ class Recognizer:
         a = cv2.resize(a, (width, self.h))  # same call and interpolation as the original pipeline
         return (a.astype(np.float32) / 255.0)[None, None]
 
-    def tokens(self, img: Image.Image) -> list[str]:
+    def read(self, img: Image.Image) -> tuple[list[str], float, float]:
+        """Greedy decoding. Returns tokens, mean confidence of the chosen tokens, and the share of tokens
+        chosen with less than 50 % confidence (high on things that aren't music, such as titles)."""
         enc = self.enc.run(None, {"image": self.preprocess(img)})[0]
         seq = [self.w2i["<bos>"]]
-        out = []
+        out, probs = [], []
         for _ in range(self.maxlen - 1):
-            logits = self.dec.run(None, {"enc": enc, "tokens": np.array([seq], dtype=np.int64)})[0]
-            t = int(np.argmax(logits[0]))
+            logits = self.dec.run(None, {"enc": enc, "tokens": np.array([seq], dtype=np.int64)})[0][0]
+            t = int(np.argmax(logits))
+            e = np.exp(logits - logits[t])
+            probs.append(float(1.0 / e.sum()))
             word = self.i2w[str(t)]
             if word == "<eos>":
                 break
             out.append(word)
             seq.append(t)
-        return out
+        p = np.array(probs) if probs else np.array([0.0])
+        return out, float(p.mean()), float((p < 0.5).mean())
+
+    def tokens(self, img: Image.Image) -> list[str]:
+        return self.read(img)[0]
 
     def kern(self, img: Image.Image) -> str:
         return untokenize(self.tokens(img))
+
+    def kern_checked(self, img: Image.Image) -> tuple[str, bool]:
+        """Kern text and whether the reading looks like real music (confident)."""
+        toks, mean, low = self.read(img)
+        return untokenize(toks), (mean >= 0.9 and low <= 0.08)
 
 
 def untokenize(tokens: list[str]) -> str:
