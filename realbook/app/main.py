@@ -435,8 +435,8 @@ class ImportDialog(QDialog):
         self.bookmarks = plan_from_bookmarks(pdf_path)
         if self.bookmarks:
             self.method.addItem(f"Use the PDF's bookmarks ({len(self.bookmarks)} songs)", "bookmarks")
-        self.method.addItem("Use an index file (title and page number per line)", "index")
         self.method.addItem("One song per page (name them later)", "pages")
+        self.method.addItem("Use an index file (title and page number per line)", "index")
         self.index_btn = QPushButton("Choose index file…")
         self.index_path = None
         self.offset = QSpinBox()
@@ -458,7 +458,8 @@ class ImportDialog(QDialog):
         form.addRow("Find songs by", self.method)
         idx = QHBoxLayout()
         idx.addWidget(self.index_btn)
-        idx.addWidget(QLabel("Page offset"))
+        self.offset_label = QLabel("Page offset")
+        idx.addWidget(self.offset_label)
         idx.addWidget(self.offset)
         idx.addStretch(1)
         form.addRow("", idx)
@@ -501,7 +502,10 @@ class ImportDialog(QDialog):
         return [p for p in pl if self.first.value() <= p.first_page <= self.last.value()]
 
     def refresh(self):
-        self.index_btn.setVisible(self.method.currentData() == "index")
+        is_index = self.method.currentData() == "index"
+        self.index_btn.setVisible(is_index)
+        self.offset.setVisible(is_index)
+        self.offset_label.setVisible(is_index)
         pl = self.plan()
         self.table.setRowCount(len(pl))
         for r, p in enumerate(pl):
