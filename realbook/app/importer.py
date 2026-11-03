@@ -124,41 +124,89 @@ class ImportJob:
             "plan": [{"title": p.title, "first_page": p.first_page, "last_page": p.last_page} for p in self.plan],
         })
 
-    def run(self, on_progress=lambda done, total, title, eta: None, on_song=lambda song_id: None, recognizer=None):
+    def log(self, msg: str) -> None:
+        try:
+            with open(self.lib.root / "import.log", "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+        except OSError:
+            pass
+
+    def run(self, on_progress=lambda done, total, title, eta: None, on_song=lambda song_id: None, recognizer=None,
+            on_line=lambda page, line, lines: None) -> dict:
+        """Read every planned song not yet in the library. Returns a summary.
+
+        on_progress(done, total, title, eta_seconds_or_None) before each song,
+        on_line(page, line_number, lines_on_page) before each line of music, so the window shows life
+        every couple of seconds. Pages without music (covers, contents, blank pages) are skipped quickly.
+        A song that fails is logged and skipped; the import carries on.
+        """
+        import traceback
+
         import pymupdf
 
         from ..omr.recognize import default_recognizer
 
         self.save_book()
+        book = self.lib.load_book(self.book_id) or {}
+        no_music = set(book.get("no_music", []))
+        summary = {"imported": 0, "no_music": 0, "failed": 0, "failed_titles": []}
+        self.log(f"import of '{self.book_title}' ({self.pdf}): {len(self.plan)} songs planned")
         rec = recognizer or default_recognizer()
         doc = pymupdf.open(self.pdf)
-        todo = [p for p in self.plan if not self.lib.has_song(song_id_for(self.book_id, p))]
-        t0 = time.time()
+        todo = [p for p in self.plan
+                if not self.lib.has_song(song_id_for(self.book_id, p)) and p.first_page not in no_music]
+        pages_total = sum(p.last_page - p.first_page + 1 for p in todo)
+        pages_done = 0
+        music_pages, music_secs = 0, 0.0  # estimate from pages that actually had music, not quick blank pages
         for k, ps in enumerate(todo):
             if self.cancelled:
                 break
-            eta = (time.time() - t0) / k * (len(todo) - k) if k else None
+            eta = music_secs / music_pages * (pages_total - pages_done) if music_pages else None
             on_progress(k, len(todo), ps.title, eta)
             sid = song_id_for(self.book_id, ps)
-            kerns, systems = [], []
-            for page_no in range(ps.first_page, ps.last_page + 1):
-                img = page_image(doc, page_no)
-                for st in find_staves(img):
+            try:
+                kerns, systems = [], []
+                for page_no in range(ps.first_page, ps.last_page + 1):
                     if self.cancelled:
                         break
-                    c = crop(img, st)
-                    n = len(systems)
-                    c.save(self.lib.crop_path(sid, n))
-                    kerns.append(rec.kern(c))
-                    systems.append({"page": page_no, "box": list(st.crop_box), "crop": self.lib.crop_path(sid, n).name})
-            if self.cancelled:
-                break
-            if not kerns:
-                song = {"title": ps.title, "key": "C", "time": "4/4", "bars": [], "systems": [],
-                        "review": {"status": "draft", "note": "No music lines found on these pages."}}
-            else:
+                    t_page = time.time()
+                    img = page_image(doc, page_no)
+                    staves = find_staves(img)
+                    for li, st in enumerate(staves):
+                        if self.cancelled:
+                            break
+                        on_line(page_no, li + 1, len(staves))
+                        c = crop(img, st)
+                        n = len(systems)
+                        c.save(self.lib.crop_path(sid, n))
+                        kerns.append(rec.kern(c))
+                        systems.append({"page": page_no, "box": list(st.crop_box),
+                                        "crop": self.lib.crop_path(sid, n).name})
+                    pages_done += 1
+                    if staves and not self.cancelled:
+                        music_pages += 1
+                        music_secs += time.time() - t_page
+                if self.cancelled:
+                    break
+                if not kerns:
+                    no_music.add(ps.first_page)
+                    summary["no_music"] += 1
+                    self.log(f"pages {ps.first_page}-{ps.last_page} ('{ps.title}'): no music found, skipped")
+                    continue
                 song = staves_to_song(kerns, ps.title, systems)
-            song.update({"book": self.book_id, "pages": list(range(ps.first_page, ps.last_page + 1))})
-            self.lib.save_song(sid, song)
-            on_song(sid)
+                song.update({"book": self.book_id, "pages": list(range(ps.first_page, ps.last_page + 1))})
+                self.lib.save_song(sid, song)
+                summary["imported"] += 1
+                self.log(f"'{ps.title}' (pages {ps.first_page}-{ps.last_page}): {len(systems)} lines, "
+                         f"{len(song['bars'])} bars")
+                on_song(sid)
+            except Exception:
+                summary["failed"] += 1
+                summary["failed_titles"].append(ps.title)
+                self.log(f"'{ps.title}' (pages {ps.first_page}-{ps.last_page}) FAILED:\n{traceback.format_exc()}")
+        book = self.lib.load_book(self.book_id) or {}
+        book["no_music"] = sorted(no_music)
+        self.lib.save_book(self.book_id, book)
+        self.log(f"finished: {summary}" + (" (stopped by user)" if self.cancelled else ""))
         on_progress(len(todo), len(todo), "", 0)
+        return summary

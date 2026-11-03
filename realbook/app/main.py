@@ -37,6 +37,8 @@ QLabel#error { background: #fde8e6; color: #7a1d16; border: 1px solid #f1b5af; b
 QLabel.caption { color: #5b6676; font-size: 9pt; }
 QFrame#system { border: 1px solid #dde2ea; border-radius: 6px; background: palette(base); }
 QListWidget::item { padding: 4px 2px; }
+QFrame#importPanel { background: #eaf2fb; border: 1px solid #b7cde6; border-radius: 6px; }
+QLabel#importTitle { font-size: 12pt; font-weight: 600; }
 """
 
 
@@ -609,21 +611,40 @@ class MainWindow(QMainWindow):
         self.right.addWidget(self.empty)
         self.right.addWidget(self.tabs)
 
-        split = QSplitter()
-        split.addWidget(left)
-        split.addWidget(self.right)
-        split.setSizes([280, 1000])
-        self.setCentralWidget(split)
-
-        # status bar: import progress
+        # import panel: shown above everything while a book is being read
+        self.imp_panel = QFrame()
+        self.imp_panel.setObjectName("importPanel")
+        self.imp_title = QLabel()
+        self.imp_title.setObjectName("importTitle")
+        self.imp_detail = QLabel()
+        self.imp_detail.setWordWrap(True)
         self.prog = QProgressBar()
-        self.prog.setMaximumWidth(260)
-        self.prog_label = QLabel()
+        self.prog.setTextVisible(True)
         self.cancel_btn = QPushButton("Stop import")
         self.cancel_btn.clicked.connect(self._cancel_import)
-        for w in (self.prog_label, self.prog, self.cancel_btn):
-            self.statusBar().addPermanentWidget(w)
-            w.hide()
+        pl = QVBoxLayout(self.imp_panel)
+        top = QHBoxLayout()
+        top.addWidget(self.imp_title, 1)
+        top.addWidget(self.cancel_btn)
+        pl.addLayout(top)
+        pl.addWidget(self.prog)
+        pl.addWidget(self.imp_detail)
+        self.imp_panel.hide()
+        self._imp_song = ("", 0, 0)
+        self._imp_eta = -1.0
+        # keep the old names working for code that refers to them
+        self.prog_label = self.imp_detail
+        right_box = QWidget()
+        rb = QVBoxLayout(right_box)
+        rb.setContentsMargins(0, 0, 0, 0)
+        rb.addWidget(self.imp_panel)
+        rb.addWidget(self.right, 1)
+
+        split = QSplitter()
+        split.addWidget(left)
+        split.addWidget(right_box)
+        split.setSizes([280, 1000])
+        self.setCentralWidget(split)
 
         m = self.menuBar().addMenu("&File")
         a = QAction("Import a Real Book PDF…", self)
@@ -644,6 +665,9 @@ class MainWindow(QMainWindow):
         a.triggered.connect(self.delete_song)
         s.addAction(a)
         h = self.menuBar().addMenu("&Help")
+        a = QAction("Show import log", self)
+        a.triggered.connect(self.show_log)
+        h.addAction(a)
         a = QAction("About", self)
         a.triggered.connect(self.about)
         h.addAction(a)
@@ -677,6 +701,12 @@ class MainWindow(QMainWindow):
         self.list.blockSignals(False)
         reviewed = sum(1 for e in entries if e.status == "reviewed")
         self.count.setText(f"{len(entries)} songs · {reviewed} checked")
+        if not entries:
+            running = self.import_thread is not None and self.import_thread.isRunning()
+            self.empty.setText(
+                "<h2>Reading your book…</h2><p>Songs appear in the list as soon as each one is read.<br>"
+                "The first can take a minute; progress is shown above.</p>" if running else
+                "<h2>Your library is empty</h2><p>Use <b>File → Import a Real Book PDF…</b> to add songs.</p>")
         self.right.setCurrentIndex(1 if entries else 0)
         if self.list.currentItem() is None and self.list.count():
             self.list.setCurrentRow(0)
@@ -726,34 +756,82 @@ class MainWindow(QMainWindow):
             return
         plan = dlg.edited_plan()
         if not plan:
+            QMessageBox.warning(self, "Nothing to import",
+                                "The song list was empty, so nothing was imported. Open the PDF again and choose "
+                                "“One song per page”, or load an index file.")
             return
-        job = ImportJob(self.lib, path, dlg.book_title.text().strip() or Path(path).stem, plan)
+        self.import_book_title = dlg.book_title.text().strip() or Path(path).stem
+        job = ImportJob(self.lib, path, self.import_book_title, plan)
         self.import_thread = ImportThread(job)
         self.import_thread.progress.connect(self._import_progress)
+        self.import_thread.line.connect(self._import_line)
         self.import_thread.song_added.connect(lambda sid: self.refresh_list())
+        self.import_thread.summary.connect(self._import_summary)
         self.import_thread.failed.connect(lambda msg: QMessageBox.warning(self, "Import stopped", msg))
         self.import_thread.finished.connect(self._import_finished)
-        for w in (self.prog_label, self.prog, self.cancel_btn):
-            w.show()
+        self.imp_title.setText(f"Importing “{self.import_book_title}”")
+        self.imp_detail.setText("Starting…")
+        self.prog.setRange(0, 0)  # busy until the first song starts
+        self.cancel_btn.setEnabled(True)
+        self.imp_panel.show()
         self.import_thread.start()
+        self.refresh_list()
+
+    @staticmethod
+    def _fmt_time(sec: float) -> str:
+        if sec < 0:
+            return ""
+        m = int(round(sec / 60))
+        if m < 1:
+            return "less than a minute left"
+        return f"about {m} min left" if m < 60 else f"about {m // 60} h {m % 60:02d} min left"
 
     def _import_progress(self, done: int, total: int, title: str, eta: float):
-        self.prog.setMaximum(max(1, total))
+        if not title:
+            return
+        self.prog.setRange(0, max(1, total))
         self.prog.setValue(done)
-        left = "" if eta < 0 else f" · about {max(1, round(eta / 60))} min left"
-        self.prog_label.setText(f"Reading {title} ({done + 1}/{total}){left}" if title else "Import finished")
+        self.prog.setFormat(f"song {done + 1} of {total}")
+        self._imp_song = (title, done + 1, total)
+        self._imp_eta = eta
+        self.imp_detail.setText(f"Reading “{title}”…  {self._fmt_time(eta)}")
+        self.setWindowTitle(f"{APP_NAME} — importing {done + 1}/{total}")
+
+    def _import_line(self, page: int, line: int, lines: int):
+        title, k, n = self._imp_song
+        eta = self._fmt_time(self._imp_eta)
+        self.imp_detail.setText(f"Reading “{title}”: page {page}, line {line} of {lines}" + (f"  ·  {eta}" if eta else ""))
+
+    def _import_summary(self, s: dict):
+        self._last_summary = s
 
     def _import_finished(self):
-        for w in (self.prog, self.cancel_btn):
-            w.hide()
-        self.prog_label.setText("Import finished" if not self.import_thread.job.cancelled else
-                                "Import stopped; choose the same PDF again to continue")
+        self.setWindowTitle(APP_NAME)
+        s = getattr(self, "_last_summary", None)
+        cancelled = self.import_thread.job.cancelled
+        self.prog.setRange(0, 1)
+        self.prog.setValue(1)
+        self.prog.setFormat("")
+        self.cancel_btn.setEnabled(False)
+        parts = []
+        if s:
+            parts.append(f"{s['imported']} songs read")
+            if s["no_music"]:
+                parts.append(f"{s['no_music']} pages without music skipped (cover, contents…)")
+            if s["failed"]:
+                parts.append(f"{s['failed']} could not be read: {', '.join(s['failed_titles'][:5])}"
+                             + ("…" if s["failed"] > 5 else "") + " (details in import.log in the library folder)")
+        self.imp_title.setText("Import stopped" if cancelled else "Import finished")
+        self.imp_detail.setText(" · ".join(parts) + ("  —  import the same PDF again to continue where it stopped"
+                                                     if cancelled else ""))
+        QTimer.singleShot(60000, self.imp_panel.hide)
         self.refresh_list()
 
     def _cancel_import(self):
         if self.import_thread:
             self.import_thread.cancel()
-            self.prog_label.setText("Stopping after the current line…")
+            self.cancel_btn.setEnabled(False)
+            self.imp_detail.setText("Stopping after the current line…")
 
     # ---- settings / about
     def open_settings(self):
@@ -763,6 +841,13 @@ class MainWindow(QMainWindow):
             save_settings(self.settings)
             self.lib = Library(self.settings["library"])
             self.refresh_list()
+
+    def show_log(self):
+        log = self.lib.root / "import.log"
+        if not log.exists():
+            QMessageBox.information(self, "Import log", "Nothing has been imported yet.")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(log)))
 
     def about(self):
         QMessageBox.about(self, APP_NAME, (

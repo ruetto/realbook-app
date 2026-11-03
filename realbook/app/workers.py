@@ -68,15 +68,20 @@ class PreviewJob(_Thread):
 
 class ImportThread(_Thread):
     progress = Signal(int, int, str, float)
+    line = Signal(int, int, int)  # page, line number, lines on page
     song_added = Signal(str)
+    summary = Signal(dict)
 
     def __init__(self, job):
         super().__init__()
         self.job = job
 
     def work(self):
-        self.job.run(on_progress=lambda d, t, title, eta: self.progress.emit(d, t, title, -1.0 if eta is None else eta),
-                     on_song=self.song_added.emit)
+        result = self.job.run(
+            on_progress=lambda d, t, title, eta: self.progress.emit(d, t, title, -1.0 if eta is None else eta),
+            on_song=self.song_added.emit,
+            on_line=lambda page, li, n: self.line.emit(page, li, n))
+        self.summary.emit(result)
 
     def cancel(self):
         self.job.cancelled = True
