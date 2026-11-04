@@ -18,7 +18,15 @@ def blocks(text: str) -> dict:
 
 
 def meta(text: str) -> dict:
-    return tomllib.loads(re.match(r"\{#(.*?)#\}", text, re.S).group(1))
+    md = tomllib.loads(re.match(r"\{#(.*?)#\}", text, re.S).group(1))
+    # OpenBook escapes quotes for LilyPond (\"Medic\"); the app wants the plain text
+    def plain(v):
+        if isinstance(v, str):
+            return v.replace('\\"', '"')
+        if isinstance(v, dict):
+            return {k: plain(x) for k, x in v.items()}
+        return v
+    return plain(md)
 
 
 def build_ly(slug: str, dump_file: Path) -> tuple[str, dict]:

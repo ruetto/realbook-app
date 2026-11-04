@@ -424,6 +424,7 @@ def draw_index(doc, first_pno: int, rows: list, fonts: _Fonts, heading: str, son
         if pi == 0:
             fonts.draw(page, W / 2, 70, heading, 24, "bold", INK, "center")
             y0 = TOP + 40
+        leaders = page.new_shape()
         for ci, col in enumerate(cols):
             x = margin + ci * (col_w + gutter)
             y = y0
@@ -447,18 +448,14 @@ def draw_index(doc, first_pno: int, rows: list, fonts: _Fonts, heading: str, son
                 # dotted leader
                 lx0, lx1 = x + tw + kw + 10, x + col_w - nw - 5
                 if lx1 > lx0:
-                    sh = page.new_shape()
-                    xx = lx0
-                    while xx < lx1:
-                        sh.draw_circle((xx, y - 2.4), 0.45)
-                        xx += 3.6
-                    sh.finish(color=GREY, fill=GREY, width=0)
-                    sh.commit()
+                    leaders.draw_line((lx0, y - 2.4), (lx1, y - 2.4))
                 target = song_start.get(pg)
                 if target is not None:
                     page.insert_link({"kind": pymupdf.LINK_GOTO, "page": target,
                                       "from": pymupdf.Rect(x, y - 9, x + col_w, y + 3), "to": pymupdf.Point(0, 0)})
                 y += ROW
+        leaders.finish(color=GREY, width=0.9, dashes="[0 3.6] 0", lineCap=1)  # round dots
+        leaders.commit()
 
 
 # ---------------------------------------------------------------- the whole book
@@ -625,46 +622,56 @@ def build_songbook(songs: list[tuple[str, dict]], opts: BookOptions, out_pdf: Pa
     # 3. assemble: cover, index, songs, glossary, composer index
     progress(total * 3 - 1, total * 3, "Putting the book together…")
     fonts = _Fonts()
-    book = pymupdf.open()
     placed = [(sid, d) for sid, d in songs if sid in ranges]
     entries = [{"title": d.get("title", sid), "composer": d.get("composer", ""),
                 "key": pretty_key(d.get("key", ""), d.get("mode", "major")), "page": 0} for sid, d in placed]
     n_index = index_page_count(index_rows(entries, "title"))
-    book.new_page(width=A4[0], height=A4[1])  # cover
-    for _ in range(n_index):
-        book.new_page(width=A4[0], height=A4[1])
+    # Plan the page order first. Each engraved group is then copied in once, whole, so its fonts are stored
+    # once (copying tune by tune would repeat the fonts for every tune), and the pages are put in order.
+    order: list = [("new", "cover")] + [("new", "index")] * n_index
     blank = set()
     sources = {}
-    open_docs = {}
     for e, (sid, d) in zip(entries, placed):
         pdf, start, count = ranges[sid]
-        if opts.no_page_turns and count >= 2 and (book.page_count + 1) % 2 == 1:
-            notes_page(book.new_page(width=A4[0], height=A4[1]), fonts)
-            blank.add(book.page_count - 1)
-        e["page"] = book.page_count + 1
-        if pdf not in open_docs:
-            open_docs[pdf] = pymupdf.open(pdf)
-        book.insert_pdf(open_docs[pdf], from_page=start, to_page=start + count - 1, links=False, annots=False)
+        if opts.no_page_turns and count >= 2 and (len(order) + 1) % 2 == 1:
+            blank.add(len(order))
+            order.append(("new", "notes"))
+        e["page"] = len(order) + 1
+        order += [("src", pdf, start + k) for k in range(count)]
         if d.get("openbook"):
             sources["OpenBook (github.com/veltzer/openbook)"] = 1
         elif d.get("book"):
             sources[d["book"]] = 1
-    for doc in open_docs.values():
-        doc.close()
     gl_start = None
     if gl_pdf and gl_pdf.exists():
-        if book.page_count % 2 == 1:  # glossary opens on a right-hand page
-            notes_page(book.new_page(width=A4[0], height=A4[1]), fonts)
-            blank.add(book.page_count - 1)
-        gl_start = book.page_count
+        if len(order) % 2 == 1:  # glossary opens on a right-hand page
+            blank.add(len(order))
+            order.append(("new", "notes"))
+        gl_start = len(order)
         with pymupdf.open(gl_pdf) as g:
-            book.insert_pdf(g, links=False, annots=False)
+            order += [("src", gl_pdf, k) for k in range(g.page_count)]
     comp_start = None
     if opts.composer_index:
         comp_rows = index_rows(entries, "composer")
-        comp_start = book.page_count
-        for _ in range(index_page_count(comp_rows)):
+        comp_start = len(order)
+        order += [("new", "composer")] * index_page_count(comp_rows)
+    book = pymupdf.open()
+    base = {}
+    for slot in order:
+        if slot[0] == "src" and slot[1] not in base:
+            base[slot[1]] = book.page_count
+            with pymupdf.open(slot[1]) as src:
+                book.insert_pdf(src, links=False, annots=False)
+    sequence = []
+    for slot in order:
+        if slot[0] == "src":
+            sequence.append(base[slot[1]] + slot[2])
+        else:
             book.new_page(width=A4[0], height=A4[1])
+            sequence.append(book.page_count - 1)
+    book.select(sequence)
+    for pno in blank:
+        notes_page(book[pno], fonts)
     song_start = {e["page"]: e["page"] - 1 for e in entries}
     draw_cover(book[0], fonts, opts, len(entries), tuning_txt, list(sources))
     rows = index_rows(entries, "title")
