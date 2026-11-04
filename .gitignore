@@ -7,3 +7,10 @@ dist/
 # never commit Real Book material
 *.pdf
 library/
+# OpenBook conversion: the tunes stay local (they belong to their copyright holders)
+tools/openbook/openbook/
+tools/openbook/work/
+tools/openbook/pack/
+tools/openbook/*.zip
+tools/openbook/build.log
+*.zip

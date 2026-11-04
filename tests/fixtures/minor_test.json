@@ -1,0 +1,109 @@
+{
+ "title": "Minor Test",
+ "composer": "realbook test suite",
+ "style": "Ballad",
+ "key": "E",
+ "mode": "minor",
+ "time": "4/4",
+ "pickup": "3",
+ "bars_per_line": 4,
+ "source": "original test material",
+ "bars": [
+  {
+   "chords": [],
+   "notes": [
+    "4E4",
+    "4F#4",
+    "4G4"
+   ]
+  },
+  {
+   "chords": [
+    {
+     "beat": 0,
+     "symbol": "A-7"
+    }
+   ],
+   "notes": [
+    "1C5~"
+   ]
+  },
+  {
+   "chords": [
+    {
+     "beat": 0,
+     "symbol": "D7"
+    }
+   ],
+   "notes": [
+    "8C5@3/2",
+    "8B4@3/2",
+    "8A4@3/2",
+    "4G4",
+    "2F#4"
+   ]
+  },
+  {
+   "chords": [
+    {
+     "beat": 0,
+     "symbol": "Gmaj7"
+    },
+    {
+     "beat": 2,
+     "symbol": "G/B"
+    }
+   ],
+   "notes": [
+    "2B4",
+    "2B4"
+   ]
+  },
+  {
+   "time": "3/4",
+   "chords": [
+    {
+     "beat": 0,
+     "symbol": "Cmaj7"
+    }
+   ],
+   "notes": [
+    "2.C5"
+   ]
+  },
+  {
+   "time": "4/4",
+   "key": "G",
+   "mode": "major",
+   "chords": [
+    {
+     "beat": 0,
+     "symbol": "F#-7b5"
+    },
+    {
+     "beat": 2,
+     "symbol": "B7alt"
+    }
+   ],
+   "notes": [
+    "16A4",
+    "16B4",
+    "8C5",
+    "4D5",
+    "4.E5",
+    "8D5"
+   ]
+  },
+  {
+   "chords": [
+    {
+     "beat": 0,
+     "symbol": "E-"
+    }
+   ],
+   "notes": [
+    "1E4"
+   ]
+  }
+ ]
+}

@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from ..voicings import STYLES, TUNINGS
 from . import editing
 from .importer import ImportJob, PlannedSong, plan_from_bookmarks, plan_from_index, plan_one_per_page
-from .library import Library, check_writable, load_settings, save_settings, settings_dir
+from .library import Library, check_writable, import_song_pack, load_settings, save_settings, settings_dir
 from .workers import KEEPER, ImportThread, PreviewJob, RenderJob
 
 APP_NAME = "Real Book Guitar"
@@ -458,6 +458,7 @@ class ReviewView(QWidget):
                 shutil.rmtree(d, ignore_errors=True)
 
     def changed(self):
+        self.song["edited"] = True
         self._update_status()
         self._save_timer.start()
 
@@ -729,6 +730,9 @@ class MainWindow(QMainWindow):
         a = QAction("Import a Real Book PDF…", self)
         a.triggered.connect(self.import_pdf)
         m.addAction(a)
+        a = QAction("Add OpenBook tunes (song pack)…", self)
+        a.triggered.connect(self.add_pack)
+        m.addAction(a)
         a = QAction("Open library folder", self)
         a.triggered.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.lib.root))))
         m.addAction(a)
@@ -770,6 +774,8 @@ class MainWindow(QMainWindow):
             if f != "all" and e.status != f:
                 continue
             label = e.title + ("" if e.status == "reviewed" else f"   · to check{f' ({e.flags})' if e.flags else ''}")
+            if e.book == "OpenBook":
+                label += "   · OpenBook"
             it = QListWidgetItem(label)
             it.setData(Qt.UserRole, e.id)
             if e.status == "reviewed":
@@ -879,6 +885,24 @@ class MainWindow(QMainWindow):
         if m < 1:
             return "less than a minute left"
         return f"about {m} min left" if m < 60 else f"about {m // 60} h {m % 60:02d} min left"
+
+    def add_pack(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a song pack", self.settings.get("last_pdf_dir", ""),
+                                              "Song pack (*.zip)")
+        if not path:
+            return
+        self.settings["last_pdf_dir"] = str(Path(path).parent)
+        save_settings(self.settings)
+        try:
+            added, kept = import_song_pack(self.lib, Path(path))
+        except Exception as e:
+            log.exception("song pack import failed")
+            QMessageBox.warning(self, "Can't read that file", f"This doesn't look like a song pack ({e}).")
+            return
+        log.info("song pack %s: %d added, %d kept", path, added, kept)
+        QMessageBox.information(self, "Tunes added", f"{added} tunes added to your library."
+                                + (f" {kept} you had edited were kept as they were." if kept else ""))
+        self.refresh_list()
 
     def _import_progress(self, done: int, total: int, title: str, eta: float):
         if not title:

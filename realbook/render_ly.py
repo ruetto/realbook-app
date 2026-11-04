@@ -40,7 +40,7 @@ def arrange(song: Song, style: str = "drop3", tuning_name: str = "standard", mel
             open_strings: str = "avoid", position: str | int = "auto") -> Arrangement:
     tuning = TUNINGS[tuning_name]
     evs = list(song.chord_events())
-    voicings = voice_progression([ev.chord for _, ev in evs], style, tuning)
+    voicings = voice_progression([ev.chord for _, ev in evs], style, tuning, allow_open=(open_strings == "allow"))
     # Guitar music is written an octave above where it sounds (treble clef with an 8 below).
     shift = -12 if melody_octave == "guitar" else 0
     flat = [(bi, ni, n) for bi, b in enumerate(song.bars) for ni, n in enumerate(b.notes)]
@@ -85,10 +85,20 @@ def roman(n: int) -> str:
 
 
 def ly_dur(beats: float) -> str:
-    table = {4.0: "1", 3.0: "2.", 2.0: "2", 1.5: "4.", 1.0: "4", 0.75: "8.", 0.5: "8", 0.25: "16", 3.5: "2..", 6.0: "1."}
-    if beats not in table:
-        raise ValueError(f"unsupported duration {beats}")
-    return table[beats]
+    """Duration for a length in quarter-note beats: a plain value if one exists, else a scaled whole note."""
+    from fractions import Fraction
+
+    table = {4.0: "1", 3.0: "2.", 2.0: "2", 1.5: "4.", 1.0: "4", 0.75: "8.", 0.5: "8", 0.25: "16", 3.5: "2..",
+             6.0: "1.", 1.75: "4..", 0.375: "16.", 0.125: "32", 7.0: "1..", 8.0: "\\breve"}
+    for k, v in table.items():
+        if abs(beats - k) < 1e-9:
+            return v
+    fr = Fraction(beats / 4).limit_denominator(96)
+    return f"1*{fr.numerator}/{fr.denominator}"
+
+
+def note_dur(note) -> str:
+    return note.dur or ly_dur(note.beats)
 
 
 def ly_str(s: str) -> str:
@@ -159,21 +169,25 @@ def to_lilypond(arr: Arrangement) -> str:
     for bi, ch, v in arr.voicings:
         vmap.setdefault(bi, []).append((ch, v))
     chord_row = []
+    bar_times = song.bar_times()
     for bi, b in enumerate(song.bars):
         evs = b.chords
         items = list(zip(evs, vmap.get(bi, [])))
+        bt = bar_times[bi]
+        bar_len = song.pickup if (bi == 0 and song.pickup) else bt[0] * 4 / bt[1]
         pos = 0.0
         seg = []
         if not items or items[0][0].beat > 0:
-            first = items[0][0].beat if items else per_bar
+            first = items[0][0].beat if items else bar_len
             seg.append(f"s{ly_dur(first)}")
             pos = first
         for k, (ev, (ch, v)) in enumerate(items):
-            end = items[k + 1][0].beat if k + 1 < len(items) else per_bar
+            end = items[k + 1][0].beat if k + 1 < len(items) else bar_len
             mk = f"\\markup \\left-column {{ {chord_name_markup(ch)} \\vspace #0.2 {diagram_markup(v, n)} }}"
             seg.append(f"s{ly_dur(end - ev.beat)}^{mk}")
             pos = end
-        chord_row.append(" ".join(seg) + " |")
+        prefix = f"\\time {b.time[0]}/{b.time[1]} " if b.time else ""
+        chord_row.append(prefix + " ".join(seg) + " |")
     # ---- melody (sounding pitch; staff uses treble_8 so it reads at guitar pitch)
     shift = arr.octave_shift
     mel, mel_marked = [], []
@@ -181,21 +195,41 @@ def to_lilypond(arr: Arrangement) -> str:
     prev_pos = None
     for bi, b in enumerate(song.bars):
         toks, toks_marked = [], []
+        changes = []
+        if b.time:
+            changes.append(f"\\time {b.time[0]}/{b.time[1]}")
+        if b.key:
+            changes.append(f"\\key {ly_pitch(Pitch(b.key, 3), 0)} \\{b.mode or 'major'}")
+        toks.extend(changes)
+        toks_marked.extend(changes)
+        open_tuplet = None
         for ni, note in enumerate(b.notes):
             _, _, p, midi, pl = arr.melody[mi]
             pos = arr.positions[mi]
             mi += 1
+            # tuplets: open a \tuplet group when they start, close it when they end
+            if note.tuplet != open_tuplet:
+                if open_tuplet is not None:
+                    toks.append("}")
+                    toks_marked.append("}")
+                if note.tuplet is not None:
+                    toks.append(f"\\tuplet {note.tuplet[0]}/{note.tuplet[1]} {{")
+                    toks_marked.append(toks[-1])
+                open_tuplet = note.tuplet
             if p is None:
-                toks.append(f"r{ly_dur(note.beats)}")
+                toks.append(f"r{note_dur(note)}")
                 toks_marked.append(toks[-1])
                 continue
             s, f = pl
-            tok = f"{ly_pitch(p, shift)}{ly_dur(note.beats)}\\{n - s}" + ("~" if note.tie else "")
+            tok = f"{ly_pitch(p, shift)}{note_dur(note)}\\{n - s}" + ("~" if note.tie else "")
             toks.append(tok)
             if pos != prev_pos:  # mark the hand position where it starts or changes, as guitar parts do
                 tok += f'_\\markup {{ \\fontsize #-2 \\italic {ly_str("pos. " + roman(pos))} }}'
                 prev_pos = pos
             toks_marked.append(tok)
+        if open_tuplet is not None:
+            toks.append("}")
+            toks_marked.append("}")
         bar_end = " |"
         if b.double_bar_after:
             bar_end = ' \\bar "||"'
@@ -205,10 +239,11 @@ def to_lilypond(arr: Arrangement) -> str:
         mel.append(" ".join(toks) + bar_end + brk)
         mel_marked.append(" ".join(toks_marked) + bar_end + brk)
     key_ly = ly_pitch(Pitch(song.key, 3), 0)
+    partial = f"\\partial {ly_dur(song.pickup)}" if song.pickup else ""
     tuning_ly = " ".join(_ly_tuning_note(m) for m in tuning)
     tuning_txt = " ".join(NOTE_NAMES[m % 12] for m in tuning)
     clef = '"treble_8"' if shift <= -12 else '"treble"'
-    key_txt = "Key of " + str(song.key).replace("b", "♭").replace("#", "♯")
+    key_txt = "Key of " + str(song.key).replace("b", "♭").replace("#", "♯") + (" minor" if song.mode == "minor" else "")
     sub = f"{song.style} · {key_txt}" if song.style else key_txt
     sub2 = f"{STYLES[arr.style]} · {arr.tuning_name.replace('-', ' ').capitalize()} tuning ({tuning_txt})"
     return f"""\\version "{LY_VERSION}"
@@ -228,9 +263,9 @@ def to_lilypond(arr: Arrangement) -> str:
   subtitle = {ly_str(sub)}
   subsubtitle = {ly_str(sub2)}
 }}
-chordRow = {{ {' '.join(chord_row)} }}
-melody = {{ \\time {song.time[0]}/{song.time[1]} {' '.join(mel)} }}
-melodyMarked = {{ \\time {song.time[0]}/{song.time[1]} {' '.join(mel_marked)} }}
+chordRow = {{ {partial} {' '.join(chord_row)} }}
+melody = {{ \\time {song.time[0]}/{song.time[1]} {partial} {' '.join(mel)} }}
+melodyMarked = {{ \\time {song.time[0]}/{song.time[1]} {partial} {' '.join(mel_marked)} }}
 \\score {{
   <<
     \\new Dynamics \\with {{
@@ -242,7 +277,7 @@ melodyMarked = {{ \\time {song.time[0]}/{song.time[1]} {' '.join(mel_marked)} }}
       \\override VerticalAxisGroup.nonstaff-relatedstaff-spacing.padding = #1
       \\textLengthOn
     }} \\chordRow
-    \\new Staff \\with {{ \\omit StringNumber }} {{ \\clef {clef} \\key {key_ly} \\major \\melodyMarked }}
+    \\new Staff \\with {{ \\omit StringNumber }} {{ \\clef {clef} \\key {key_ly} \\{song.mode} \\melodyMarked }}
     \\new TabStaff \\with {{ stringTunings = \\stringTuning <{tuning_ly}> }} {{ \\melody }}
   >>
   \\layout {{

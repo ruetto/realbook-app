@@ -199,7 +199,7 @@ def _structure_ok(style: str, p: list[int]) -> bool:
     return True
 
 
-def candidates(ch: Chord, style: str, tuning: list[int]) -> list[Voicing]:
+def candidates(ch: Chord, style: str, tuning: list[int], allow_open: bool = True) -> list[Voicing]:
     degrees, bass_req = style_tones(ch, style)
     n = len(degrees)
     root_pc = ch.root.pc
@@ -215,6 +215,8 @@ def candidates(ch: Chord, style: str, tuning: list[int]) -> list[Voicing]:
             for s, pc in zip(sset, pcs):
                 options.append([f for f in range(0, MAX_FRET + 1) if (tuning[s] + f) % 12 == pc])
             for frets in itertools.product(*options):
+                if not allow_open and 0 in frets:
+                    continue
                 fretted = [f for f in frets if f > 0]
                 if fretted and max(fretted) - min(fretted) > MAX_SPAN:
                     continue
@@ -256,16 +258,16 @@ def _move_cost(a: Voicing, b: Voicing) -> float:
     return 0.15 * vl + 0.4 * abs(a.avg_fret - b.avg_fret) + 0.2 * max(0, abs(a.midi[-1] - b.midi[-1]) - 5)
 
 
-def voice_progression(chords: list[Chord], style: str, tuning: list[int]) -> list[Voicing]:
+def voice_progression(chords: list[Chord], style: str, tuning: list[int], allow_open: bool = True) -> list[Voicing]:
     FALLBACKS.clear()
     if not chords:  # e.g. a page where no chord symbols were read: melody and tab only
         return []
     cands = []
     for c in chords:
-        cs = candidates(c, style, tuning)
+        cs = candidates(c, style, tuning, allow_open) or candidates(c, style, tuning, True)
         if not cs:  # e.g. an unusual chord with no playable voicing in this style: borrow another style's
             for alt in ("drop2", "drop3", "shell", "rootless"):
-                cs = candidates(c, alt, tuning)
+                cs = candidates(c, alt, tuning, allow_open) or candidates(c, alt, tuning, True)
                 if cs:
                     FALLBACKS.append((c.symbol, style, alt))
                     break

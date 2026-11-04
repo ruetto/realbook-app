@@ -250,3 +250,53 @@ def test_song_without_chords_still_engraves(tmp_path):
     for style in STYLES:
         compile_pdf(to_lilypond(arrange(from_dict(d), style, "standard")), tmp_path / f"{style}.pdf")
         assert (tmp_path / f"{style}.pdf").stat().st_size > 1000
+
+
+# ---------------------------------------------------------------- pickups, triplets, minor keys, changes
+
+MINOR = Path(__file__).parent / "fixtures" / "minor_test.json"
+
+
+def test_minor_song_with_pickup_triplets_and_changes_is_well_formed():
+    s = load(MINOR)
+    assert s.mode == "minor" and s.pickup == 3
+    assert s.check() == []
+    assert [t for t in s.bar_times()][4] == (3, 4)
+    trip = s.bars[2].notes[0]
+    assert trip.tuplet == (3, 2) and abs(trip.beats - 1 / 3) < 1e-9
+
+
+@pytest.mark.parametrize("key", ["E", "G", "C", "F#", "Bb", "Db"])
+@pytest.mark.parametrize("style", list(STYLES))
+def test_minor_song_engraves_without_any_warning(key, style, tmp_path):
+    """strict engraving: LilyPond itself checks every bar length, tuplet, pickup and string number."""
+    from realbook.render_ly import compile_pdf, to_lilypond
+
+    s = load(MINOR).transposed(key)
+    assert s.check() == []
+    compile_pdf(to_lilypond(arrange(s, style, "standard")), tmp_path / "m.pdf")
+
+
+def test_minor_transposition_keeps_mode_and_moves_key_changes():
+    s = load(MINOR).transposed("A")
+    assert str(s.key) == "A" and s.mode == "minor"
+    assert str(s.bars[5].key) == "C"  # G major section moves up a fourth too
+
+
+def test_song_pack_import(tmp_path):
+    import json
+    import zipfile
+
+    from realbook.app.library import Library, import_song_pack
+
+    pack = tmp_path / "pack.zip"
+    with zipfile.ZipFile(pack, "w") as z:
+        z.writestr("manifest.json", json.dumps({"id_prefix": "openbook", "book": "OpenBook"}))
+        z.writestr("songs/minor_test.json", MINOR.read_text())
+    lib = Library(tmp_path / "lib")
+    assert import_song_pack(lib, pack) == (1, 0)
+    d = lib.load_song("openbook-minor_test")
+    assert d["review"]["status"] == "reviewed" and d["book"] == "OpenBook"
+    d["edited"] = True
+    lib.save_song("openbook-minor_test", d)
+    assert import_song_pack(lib, pack) == (0, 1)  # the person's edits are not overwritten

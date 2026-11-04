@@ -20,6 +20,20 @@ Windows may warn that the app comes from an unknown publisher, because it isn't 
 
 Your library lives in `Documents\Real Book Guitar` (you can change this in Settings). The app never modifies your PDFs.
 
+## OpenBook tunes
+
+[OpenBook](https://github.com/veltzer/openbook) is an open-source real book typeset in LilyPond: exact melodies and chords for over 1,600 tunes. The app can load them as a song pack (**File → Add OpenBook tunes**). They arrive ready to use, with no page reading.
+
+`tools/openbook/build_pack.py` builds the pack:
+
+- LilyPond itself reads each tune and logs every note and chord as it understood them (`dump.ly`).
+- The log is converted into the app's song format.
+- Each chord name is generated from the chord's actual notes and must parse back to exactly those notes.
+- Every bar must add up to its time signature.
+- The melody must match LilyPond's own MIDI of the tune note for note.
+
+A tune that fails any check is left out of the pack. The tunes themselves are not stored in this repository.
+
 ## How it works
 
 - **Page reading.** Staff lines are found on the page directly. Each line of music is read by the JAZZMUS recognizer (University of Alicante and JKU Linz, ISMIR 2025, MIT license; see `models/LICENSE-JAZZMUS`), exported to ONNX. The ONNX version gives token-for-token the same output as the original PyTorch model.

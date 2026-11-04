@@ -20,13 +20,15 @@ FLAG_COLOR = "(rgb-color 0.85 0.45 0.0)"
 
 def _bar_ly(song: Song, bi: int) -> tuple[str, str]:
     b = song.bars[bi]
-    per_bar = song.time[0] * 4 / song.time[1]
+    ts = song.bar_times()[bi]
+    per_bar = song.pickup if (bi == 0 and song.pickup) else ts[0] * 4 / ts[1]
     notes = []
     for n in b.notes:
         if n.pitch is None:
-            notes.append(f"r{ly_dur(n.beats)}")
+            notes.append(f"r{n.dur or ly_dur(n.beats)}" + (f"*{n.tuplet[1]}/{n.tuplet[0]}" if n.tuplet else ""))
         else:
-            notes.append(f"{ly_pitch(n.pitch, 0)}{ly_dur(n.beats)}" + ("~" if n.tie else ""))
+            notes.append(f"{ly_pitch(n.pitch, 0)}{n.dur or ly_dur(n.beats)}" + ("~" if n.tie else "")
+                         + (f"*{n.tuplet[1]}/{n.tuplet[0]}" if n.tuplet else ""))
     total = b.beats
     if total < per_bar:  # keep later bars aligned; the bar is flagged anyway
         gap = per_bar - total
@@ -77,7 +79,7 @@ def system_previews(song_data: dict, out_dir: Path, resolution: int = 100) -> li
       \\new Dynamics \\with {{ \\override TextScript.self-alignment-X = #LEFT \\override TextScript.font-size = #1.5 \\override TextScript.font-shape = #'upright \\override TextScript.font-series = #'medium \\textLengthOn }}
         {{ {' '.join(chords)} }}
       \\new Staff {{ \\set Score.currentBarNumber = #{bar_no} \\override Score.BarNumber.break-visibility = ##(#f #t #t)
-        \\clef treble \\key {key} \\major \\time {song.time[0]}/{song.time[1]} {omit_ts} {' '.join(mel)} \\bar "|" }}
+        \\clef treble \\key {key} \\{song.mode} \\time {song.time[0]}/{song.time[1]} {omit_ts} {' '.join(mel)} \\bar "|" }}
     >>
     \\layout {{ indent = 0 ragged-right = ##f line-width = 190\\mm }}
   }}

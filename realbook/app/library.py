@@ -147,3 +147,31 @@ class Library:
 
     def crop_path(self, song_id: str, n: int) -> Path:
         return self.root / "crops" / f"{song_id}_{n:02d}.png"
+
+
+def import_song_pack(lib: "Library", pack: Path) -> tuple[int, int]:
+    """Load a song pack (zip of song JSON files, e.g. the OpenBook conversion) into the library.
+
+    Songs from a pack are exact transcriptions, so they arrive marked as checked. Songs already in the
+    library with the same id are replaced unless the person has edited them (edited songs are kept).
+    Returns (added or updated, kept because edited).
+    """
+    import zipfile
+
+    added = kept = 0
+    with zipfile.ZipFile(pack) as z:
+        manifest = json.loads(z.read("manifest.json")) if "manifest.json" in z.namelist() else {}
+        prefix = manifest.get("id_prefix", "pack")
+        for name in z.namelist():
+            if not name.startswith("songs/") or not name.endswith(".json"):
+                continue
+            song = json.loads(z.read(name))
+            sid = f"{prefix}-{Path(name).stem}"
+            if lib.has_song(sid) and lib.load_song(sid).get("edited"):
+                kept += 1
+                continue
+            song.setdefault("review", {})["status"] = "reviewed"
+            song["book"] = manifest.get("book", prefix)
+            lib.save_song(sid, song)
+            added += 1
+    return added, kept
