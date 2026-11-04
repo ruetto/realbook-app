@@ -274,7 +274,14 @@ def test_minor_song_engraves_without_any_warning(key, style, tmp_path):
 
     s = load(MINOR).transposed(key)
     assert s.check() == []
-    compile_pdf(to_lilypond(arrange(s, style, "standard")), tmp_path / "m.pdf")
+    arr = arrange(s, style, "standard")
+    ly = to_lilypond(arr)
+    try:
+        compile_pdf(ly, tmp_path / "m.pdf")
+    except RuntimeError as e:
+        lines = [x for x in ly.splitlines() if x.startswith(("melody =", "    \\new TabStaff"))]
+        places = [(str(p), m, pl) for _, _, p, m, pl in arr.melody]
+        raise AssertionError(f"{e}\n--- source ---\n" + "\n".join(lines) + f"\n--- placements ---\n{places}") from None
 
 
 def test_minor_transposition_keeps_mode_and_moves_key_changes():
