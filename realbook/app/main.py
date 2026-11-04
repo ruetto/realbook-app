@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget,
 )
 
+from ..song import MAJOR_KEY_CHOICES, MINOR_KEY_CHOICES
 from ..voicings import STYLES, TUNINGS
 from . import editing
 from .importer import ImportJob, PlannedSong, plan_from_bookmarks, plan_from_index, plan_one_per_page
@@ -28,7 +29,7 @@ from .library import Library, check_writable, import_song_pack, load_settings, s
 from .workers import KEEPER, ImportThread, PreviewJob, RenderJob
 
 APP_NAME = "Real Book Guitar"
-KEYS = ["Original", "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+KEYS = ["Original", *MAJOR_KEY_CHOICES]
 TUNING_NAMES = {"standard": "Standard (E A D G B E)", "half-step-down": "Half step down (Eb)",
                 "drop-d": "Drop D", "all-fourths": "All fourths (E A D G C F)"}
 STYLE_NAMES = {"shell": "Shells", "drop2": "Drop-2", "drop3": "Drop-3", "rootless": "Rootless"}
@@ -125,7 +126,21 @@ class SongView(QWidget):
     def show_song(self, song_id: str):
         self.song_id = song_id
         self.song = self.win.lib.load_song(song_id)
+        self._fill_keys()
         self.render()
+
+    def _fill_keys(self):
+        """Key menu in the tune's own mode: minor tunes get Cm, C#m, Dm, Ebm... (never Db minor)."""
+        minor = self.song.get("mode") == "minor"
+        sfx = "m" if minor else ""
+        pretty = lambda k: k.replace("b", "♭").replace("#", "♯") + sfx  # noqa: E731
+        self.key.blockSignals(True)
+        self.key.clear()
+        self.key.addItem(f"Original ({pretty(str(self.song.get('key', 'C')))})", "Original")
+        for k in (MINOR_KEY_CHOICES if minor else MAJOR_KEY_CHOICES):
+            self.key.addItem(pretty(k), k)
+        self.key.setCurrentIndex(0)
+        self.key.blockSignals(False)
 
     def render(self):
         if not self.song:
@@ -137,6 +152,9 @@ class SongView(QWidget):
             self.banner.show()
             self.doc.close()
             return
+        self.banner.setObjectName("banner")
+        self.banner.style().unpolish(self.banner)
+        self.banner.style().polish(self.banner)
         if st != "reviewed":
             self.banner.setText(
                 f"This song was read automatically and hasn't been checked yet"
@@ -169,8 +187,20 @@ class SongView(QWidget):
             self._start_job()
 
     def _failed(self, msg: str, sid):
+        log.error("engraving failed for %s with %s:\n%s", sid, self.options(), msg)
         if sid == self.song_id and self._request is None:
-            self.status.setText("Could not engrave this song: " + msg.splitlines()[0])
+            # never leave the previous sheet up: it would look as if the change did nothing
+            self.doc.close()
+            self.pdf_path = None
+            what = msg.split("\n\nTraceback")[0].strip()
+            lines = [x.strip() for x in what.splitlines() if "error" in x.lower()] or what.splitlines()[:1]
+            self.status.setText("")
+            self.banner.setObjectName("error")
+            self.banner.setText("Could not engrave this song with these settings: " + "; ".join(lines[:3])
+                                + " (details: Help → Show app log)")
+            self.banner.style().unpolish(self.banner)
+            self.banner.style().polish(self.banner)
+            self.banner.show()
 
     def _rendered(self, path: str, warnings: list, sid=None, opts=None):
         if sid != self.song_id or opts != self.options() or self._request is not None:
@@ -187,7 +217,8 @@ class SongView(QWidget):
         if not self.pdf_path:
             return
         o = self.options()
-        name = f"{self.song.get('title', 'song')} ({o['key'] if o['key'] != 'Original' else self.song.get('key')}, {STYLE_NAMES[o['style']]}).pdf"
+        key = (o['key'] if o['key'] != 'Original' else self.song.get('key')) + ("m" if self.song.get("mode") == "minor" else "")
+        name = f"{self.song.get('title', 'song')} ({key}, {STYLE_NAMES[o['style']]}).pdf"
         start = self.win.settings.get("last_export_dir", "")
         target, _ = QFileDialog.getSaveFileName(self, "Save PDF", str(Path(start) / name) if start else name,
                                                 "PDF (*.pdf)")
@@ -340,7 +371,7 @@ class ReviewView(QWidget):
         self.composer = QLineEdit()
         self.style_txt = QLineEdit()
         self.style_txt.setPlaceholderText("e.g. Med. Swing")
-        self.key = _combo([k for k in KEYS if k != "Original"])
+        self.key = _combo(list(dict.fromkeys(MAJOR_KEY_CHOICES + MINOR_KEY_CHOICES)))
         for w in (self.title, self.composer, self.style_txt):
             w.editingFinished.connect(self._meta_changed)
         self.key.currentIndexChanged.connect(self._meta_changed)

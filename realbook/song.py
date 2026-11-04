@@ -41,6 +41,19 @@ class Bar:
         return sum(n.beats for n in self.notes)
 
 
+# Key names a musician would write. Minor keys like Db minor (8 flats) or Gb minor (9 flats) only
+# exist on paper; their usual spelling is C# minor / F# minor. Same idea for majors (C# -> Db).
+MAJOR_SPELLING = {"C#": "Db", "D#": "Eb", "G#": "Ab", "A#": "Bb", "Cb": "B", "Fb": "E", "E#": "F", "B#": "C"}
+MINOR_SPELLING = {"Db": "C#", "Gb": "F#", "Ab": "G#", "D#": "Eb", "A#": "Bb", "Cb": "B", "Fb": "E", "E#": "F",
+                  "B#": "C"}
+MAJOR_KEY_CHOICES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+MINOR_KEY_CHOICES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"]
+
+
+def playable_key(key: str, mode: str = "major") -> str:
+    return (MINOR_SPELLING if mode == "minor" else MAJOR_SPELLING).get(str(key), str(key))
+
+
 @dataclass
 class Song:
     title: str
@@ -99,7 +112,7 @@ class Song:
 
     # ------------------------------------------------------------ transposition
     def transposed(self, key: str) -> "Song":
-        target = Name.parse(key)
+        target = Name.parse(playable_key(key, self.mode))
         if str(target) == str(self.key):
             return self
         rel = transpose_name(target, Interval(2, 3)) if self.mode == "minor" else target

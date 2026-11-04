@@ -266,7 +266,7 @@ def test_minor_song_with_pickup_triplets_and_changes_is_well_formed():
     assert trip.tuplet == (3, 2) and abs(trip.beats - 1 / 3) < 1e-9
 
 
-@pytest.mark.parametrize("key", ["E", "G", "C", "F#", "Bb", "Db"])
+@pytest.mark.parametrize("key", ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B", "Db", "Gb"])
 @pytest.mark.parametrize("style", list(STYLES))
 def test_minor_song_engraves_without_any_warning(key, style, tmp_path):
     """strict engraving: LilyPond itself checks every bar length, tuplet, pickup and string number."""
@@ -307,3 +307,23 @@ def test_song_pack_import(tmp_path):
     d["edited"] = True
     lib.save_song("openbook-minor_test", d)
     assert import_song_pack(lib, pack) == (0, 1)  # the person's edits are not overwritten
+
+
+def test_minor_keys_are_spelled_as_musicians_write_them():
+    s = load(MINOR)
+    assert str(s.transposed("Db").key) == "C#" and str(s.transposed("Gb").key) == "F#"
+    assert str(s.transposed("Ab").key) == "G#" and str(s.transposed("D#").key) == "Eb"
+    for k in ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"):
+        t = s.transposed(k)
+        assert t.check() == [], k
+        for b in t.bars:  # no double sharps/flats left in the melody
+            for n in b.notes:
+                assert n.pitch is None or n.pitch.name.acc not in ("bb", "##"), (k, n)
+
+
+@pytest.mark.parametrize("key", ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B", "C#"])
+def test_major_song_engraves_in_every_key(key, tmp_path):
+    from realbook.render_ly import compile_pdf, to_lilypond
+
+    s = load(Path(__file__).parent / "fixtures" / "test_tune.json").transposed(key)
+    compile_pdf(to_lilypond(arrange(s, "drop3", "standard")), tmp_path / "t.pdf")
