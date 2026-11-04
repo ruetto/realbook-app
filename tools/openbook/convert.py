@@ -281,6 +281,17 @@ def convert(events: Path, md: dict) -> tuple[dict, list[str]]:
                 cur = (v, *rest) if rest else v
         return cur
 
+    # a tie only makes sense into the same pitch: drop ties that lead anywhere else (rests, other notes)
+    seq = [n for b in sorted(bars) for n in bars[b]]
+    for a, b in zip(seq, seq[1:] + [None]):
+        if a["tok"] and a["tok"].endswith("~") is False and "~@" not in a["tok"]:
+            continue
+        pa = a["tok"].split("@")[0].rstrip("~")
+        pb = b["tok"].split("@")[0].rstrip("~") if b and b["tok"] else ""
+        same = b is not None and pb.lstrip("0123456789.") == pa.lstrip("0123456789.") and not pb.endswith("r")
+        if not same:
+            a["tok"] = a["tok"].replace("~", "", 1)
+
     first = 0 if 0 in bars else 1
     last = max(list(bars) + list(cbars))
     out_bars = []

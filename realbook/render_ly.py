@@ -159,6 +159,23 @@ def diagram_markup(v: Voicing, n_strings: int) -> str:
     return diagram
 
 
+# Tab fret numbers: every note already carries the string we chose (\\N). LilyPond's own fret calculation
+# misjudges some notes below middle C on Windows builds (rational arithmetic), rejecting valid strings and
+# picking others. This replacement computes fret = note - open string in whole semitones, on our string.
+FRET_FUNCTION = r"""#(define (rb-note-to-fret context notes specified-info . rest)
+   (let* ((tunings (ly:context-property context 'stringTunings))
+          (sevs (car specified-info)))
+     (if (= (length sevs) (length notes))
+         (map (lambda (note sev)
+                (let* ((p (ly:event-property note 'pitch))
+                       (n (and (not (null? sev)) (ly:event-property sev 'string-number #f)))
+                       (s (if (and (integer? n) (<= 1 n (length tunings))) n 1))
+                       (fret (- (ly:pitch-semitones p) (ly:pitch-semitones (list-ref tunings (1- s))))))
+                  (list s fret)))
+              notes sevs)
+         (apply determine-frets context notes specified-info rest))))"""
+
+
 def to_lilypond(arr: Arrangement) -> str:
     song = arr.song
     tuning = arr.tuning
@@ -247,6 +264,7 @@ def to_lilypond(arr: Arrangement) -> str:
     sub = f"{song.style} · {key_txt}" if song.style else key_txt
     sub2 = f"{STYLES[arr.style]} · {arr.tuning_name.replace('-', ' ').capitalize()} tuning ({tuning_txt})"
     return f"""\\version "{LY_VERSION}"
+{FRET_FUNCTION}
 #(set-global-staff-size 17)
 \\paper {{
   #(set-paper-size "a4")
@@ -278,7 +296,7 @@ melodyMarked = {{ \\time {song.time[0]}/{song.time[1]} {partial} {' '.join(mel_m
       \\textLengthOn
     }} \\chordRow
     \\new Staff \\with {{ \\omit StringNumber }} {{ \\clef {clef} \\key {key_ly} \\{song.mode} \\melodyMarked }}
-    \\new TabStaff \\with {{ stringTunings = \\stringTuning <{tuning_ly}> }} {{ \\melody }}
+    \\new TabStaff \\with {{ stringTunings = \\stringTuning <{tuning_ly}> noteToFretFunction = #rb-note-to-fret }} {{ \\melody }}
   >>
   \\layout {{
     \\context {{ \\Score \\override SpacingSpanner.common-shortest-duration = #(ly:make-moment 1/2) }}

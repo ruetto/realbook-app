@@ -12,15 +12,19 @@ CASES = {
     "key-c-minor": r"{ \key c \minor c4\5 d4\5 es4\5 f4\4 }",
     "key-c-major": r"{ \key c \major c4\5 d4\5 es4\5 f4\4 }",
     "partial": r"{ \partial 2. c4\5 d4\5 es4\5 | f1\4 }",
-    "clef8": r"{ \clef \"treble_8\" c4\5 d4\5 es4\5 f4\4 }",
+
     "high": r"{ c'4\3 d'4\3 e'4\2 f'4\2 }",
 }
 
-for name, music in CASES.items():
-    ly = ('\\version "2.25.12"\n'
+from realbook.render_ly import FRET_FUNCTION  # noqa: E402
+
+for name, music in list(CASES.items()) + [("own-frets", CASES["plain"])]:
+    own = name == "own-frets"
+    ly = ('\\version "2.25.12"\n' + (FRET_FUNCTION + "\n" if own else "") +
           '#(display (ly:version)) #(newline)\n'
           f'm = {music}\n'
-          '\\score { \\new TabStaff \\with { stringTunings = \\stringTuning <e, a, d g b e\'> } '
+          '\\score { \\new TabStaff \\with { stringTunings = \\stringTuning <e, a, d g b e\'> '
+          + ("noteToFretFunction = #rb-note-to-fret " if own else "") + '} '
           '{ \\applyContext #(lambda (c) (display (ly:context-property c \'stringTunings)) (newline)) \\m } '
           '\\layout { } }\n')
     with tempfile.TemporaryDirectory() as td:
