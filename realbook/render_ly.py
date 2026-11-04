@@ -177,6 +177,37 @@ FRET_FUNCTION = r"""#(define (rb-note-to-fret context notes specified-info . res
 
 
 def to_lilypond(arr: Arrangement) -> str:
+    p = song_parts(arr)
+    return f"""\\version "{LY_VERSION}"
+{FRET_FUNCTION}
+#(set-global-staff-size 17)
+{paper_block(page_numbers=True)}
+\\header {{
+{p["header"]}
+}}
+{p["defs"]}
+{p["score"]}
+"""
+
+
+def paper_block(page_numbers: bool = True) -> str:
+    return f"""\\paper {{
+  #(set-paper-size "a4")
+  indent = 0
+  top-margin = 12\\mm bottom-margin = 12\\mm left-margin = 14\\mm right-margin = 14\\mm
+  system-system-spacing.basic-distance = #16
+  markup-system-spacing.basic-distance = #10
+  tagline = ##f
+  print-page-number = {'##t' if page_numbers else '##f'}
+}}"""
+
+
+def song_parts(arr: Arrangement, uid: str = "", marker: str | None = None) -> dict:
+    """The pieces of one lead sheet: header fields, music definitions and the score.
+
+    uid (letters only) makes the music variable names unique so several songs can share one file;
+    marker adds an invisible link to the title so a songbook can find where each song starts.
+    """
     song = arr.song
     tuning = arr.tuning
     n = len(tuning)
@@ -263,28 +294,18 @@ def to_lilypond(arr: Arrangement) -> str:
     key_txt = "Key of " + str(song.key).replace("b", "♭").replace("#", "♯") + (" minor" if song.mode == "minor" else "")
     sub = f"{song.style} · {key_txt}" if song.style else key_txt
     sub2 = f"{STYLES[arr.style]} · {arr.tuning_name.replace('-', ' ').capitalize()} tuning ({tuning_txt})"
-    return f"""\\version "{LY_VERSION}"
-{FRET_FUNCTION}
-#(set-global-staff-size 17)
-\\paper {{
-  #(set-paper-size "a4")
-  indent = 0
-  top-margin = 12\\mm bottom-margin = 12\\mm left-margin = 14\\mm right-margin = 14\\mm
-  system-system-spacing.basic-distance = #16
-  markup-system-spacing.basic-distance = #10
-  tagline = ##f
-  print-page-number = ##t
-}}
-\\header {{
-  title = {ly_str(song.title)}
+    title = ly_str(song.title)
+    if marker:
+        title = f"\\markup \\with-url {ly_str(marker)} {ly_str(song.title)}"
+    cr, me, mm = f"chordRow{uid}", f"melody{uid}", f"melodyMarked{uid}"
+    header = f"""  title = {title}
   composer = {ly_str(song.composer)}
   subtitle = {ly_str(sub)}
-  subsubtitle = {ly_str(sub2)}
-}}
-chordRow = {{ {partial} {' '.join(chord_row)} }}
-melody = {{ \\time {song.time[0]}/{song.time[1]} {partial} {' '.join(mel)} }}
-melodyMarked = {{ \\time {song.time[0]}/{song.time[1]} {partial} {' '.join(mel_marked)} }}
-\\score {{
+  subsubtitle = {ly_str(sub2)}"""
+    defs = f"""{cr} = {{ {partial} {' '.join(chord_row)} }}
+{me} = {{ \\time {song.time[0]}/{song.time[1]} {partial} {' '.join(mel)} }}
+{mm} = {{ \\time {song.time[0]}/{song.time[1]} {partial} {' '.join(mel_marked)} }}"""
+    score = f"""\\score {{
   <<
     \\new Dynamics \\with {{
       \\override TextScript.self-alignment-X = #LEFT
@@ -294,15 +315,15 @@ melodyMarked = {{ \\time {song.time[0]}/{song.time[1]} {partial} {' '.join(mel_m
       \\override VerticalAxisGroup.staff-affinity = #DOWN
       \\override VerticalAxisGroup.nonstaff-relatedstaff-spacing.padding = #1
       \\textLengthOn
-    }} \\chordRow
-    \\new Staff \\with {{ \\omit StringNumber }} {{ \\clef {clef} \\key {key_ly} \\{song.mode} \\melodyMarked }}
-    \\new TabStaff \\with {{ stringTunings = \\stringTuning <{tuning_ly}> noteToFretFunction = #rb-note-to-fret }} {{ \\melody }}
+    }} \\{cr}
+    \\new Staff \\with {{ \\omit StringNumber }} {{ \\clef {clef} \\key {key_ly} \\{song.mode} \\{mm} }}
+    \\new TabStaff \\with {{ stringTunings = \\stringTuning <{tuning_ly}> noteToFretFunction = #rb-note-to-fret }} {{ \\{me} }}
   >>
   \\layout {{
     \\context {{ \\Score \\override SpacingSpanner.common-shortest-duration = #(ly:make-moment 1/2) }}
   }}
-}}
-"""
+}}"""
+    return {"header": header, "defs": defs, "score": score}
 
 
 def _ly_tuning_note(midi: int) -> str:
@@ -323,7 +344,7 @@ def compile_pdf(ly_source: str, out_pdf: Path, png_preview: Path | None = None, 
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "song.ly"
         src.write_text(ly_source, encoding="utf-8")
-        r = subprocess.run([exe, "-o", str(Path(td) / "song"), str(src)], **_RUN)
+        r = subprocess.run([exe, "-dno-point-and-click", "-o", str(Path(td) / "song"), str(src)], **_RUN)
         if r.returncode != 0:
             raise RuntimeError(r.stderr[-3000:])
         # any engraving warning (e.g. a note LilyPond can't put on the requested string) is treated as an error

@@ -117,3 +117,31 @@ class JobKeeper:
 
 
 KEEPER = JobKeeper()
+
+
+class BookJob(_Thread):
+    """Build a songbook PDF or export one PDF per song, in the background, with progress and cancel."""
+
+    progress = Signal(int, int, str)
+    done = Signal(object)
+
+    def __init__(self, kind: str, songs: list, opts, target: Path, cache_dir: Path):
+        super().__init__()
+        self.kind, self.songs, self.opts, self.target, self.cache_dir = kind, songs, opts, Path(target), cache_dir
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def work(self):
+        from ..songbook import Cancelled, build_songbook, export_pdfs
+
+        prog = lambda d, t, m: self.progress.emit(int(d), int(t), m)  # noqa: E731
+        try:
+            if self.kind == "book":
+                res = build_songbook(self.songs, self.opts, self.target, self.cache_dir, prog, lambda: self._cancel)
+            else:
+                res = export_pdfs(self.songs, self.opts, self.target, self.cache_dir, prog, lambda: self._cancel)
+        except Cancelled:
+            res = None
+        self.done.emit(res)

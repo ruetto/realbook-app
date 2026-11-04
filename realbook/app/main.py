@@ -11,14 +11,14 @@ import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QtMsgType, QTimer, QUrl, qInstallMessageHandler
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QImage, QPainter, QPixmap
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem,
-    QTabWidget, QVBoxLayout, QWidget,
+    QProgressDialog, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ..song import MAJOR_KEY_CHOICES, MINOR_KEY_CHOICES
@@ -26,7 +26,7 @@ from ..voicings import STYLES, TUNINGS
 from . import editing
 from .importer import ImportJob, PlannedSong, plan_from_bookmarks, plan_from_index, plan_one_per_page
 from .library import Library, check_writable, import_song_pack, load_settings, save_settings, settings_dir
-from .workers import KEEPER, ImportThread, PreviewJob, RenderJob
+from .workers import KEEPER, BookJob, ImportThread, PreviewJob, RenderJob
 
 APP_NAME = "Real Book Guitar"
 KEYS = ["Original", *MAJOR_KEY_CHOICES]
@@ -683,6 +683,67 @@ class SettingsDialog(QDialog):
 
 # ====================================================================== main window
 
+class BookDialog(QDialog):
+    """Options for a songbook or a PDF export: which tunes, voicings, tuning, and (for a book) its cover."""
+
+    def __init__(self, parent, kind: str, n_songs: int, scope: str, view: "SongView", settings: dict):
+        super().__init__(parent)
+        self.kind = kind
+        self.setWindowTitle("Make a songbook" if kind == "book" else "Export PDFs to a folder")
+        form = QFormLayout(self)
+        form.addRow(QLabel(f"<b>{n_songs} tune{'s' if n_songs != 1 else ''}</b> ({scope}), in their original keys."))
+        b = settings.get("book", {})
+        if kind == "book":
+            self.title = QLineEdit(b.get("title", "Jazz Standards"))
+            self.subtitle = QLineEdit(b.get("subtitle", "Lead sheets for guitar"))
+            self.owner = QLineEdit(b.get("owner", ""))
+            self.owner.setPlaceholderText("e.g. your name (optional)")
+            form.addRow("Title", self.title)
+            form.addRow("Subtitle", self.subtitle)
+            form.addRow("Name on the cover", self.owner)
+        self.style = _combo(STYLE_NAMES, view.style.currentData())
+        self.tuning = _combo(TUNING_NAMES, view.tuning.currentData())
+        self.open_strings = _combo({"avoid": "Avoid open strings", "allow": "Allow open strings"},
+                                   view.open_strings.currentData())
+        form.addRow("Voicings", self.style)
+        form.addRow("Tuning", self.tuning)
+        form.addRow("", self.open_strings)
+        if kind == "book":
+            self.glossary = QCheckBox("Chord glossary at the back (every voicing used in the book)")
+            self.glossary.setChecked(b.get("glossary", True))
+            self.composers = QCheckBox("Index by composer at the back (the index of tunes is always at the front)")
+            self.composers.setChecked(b.get("composer_index", True))
+            self.turns = QCheckBox("No page turns: tunes of two pages start on a left-hand page (for double-sided "
+                                   "printing; a page for notes fills the gap)")
+            self.turns.setChecked(b.get("no_page_turns", True))
+            for w in (self.glossary, self.composers, self.turns):
+                form.addRow("", w)
+        else:
+            form.addRow(QLabel("One PDF per tune, named by its title. Title, composer and key are also stored in "
+                               "each file,\nso MobileSheets (and similar apps) can fill them in when you import."))
+        note = QLabel("The first time takes a while (about a second per tune); tunes already engraved are reused.")
+        note.setProperty("class", "caption")
+        form.addRow(note)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Choose where to save…")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        form.addRow(bb)
+
+    def options(self):
+        from ..songbook import BookOptions
+
+        o = BookOptions(style=self.style.currentData(), tuning=self.tuning.currentData(),
+                        open_strings=self.open_strings.currentData())
+        if self.kind == "book":
+            o.title = self.title.text().strip() or "Songbook"
+            o.subtitle = self.subtitle.text().strip()
+            o.owner = self.owner.text().strip()
+            o.glossary, o.composer_index = self.glossary.isChecked(), self.composers.isChecked()
+            o.no_page_turns = self.turns.isChecked()
+        return o
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -699,7 +760,10 @@ class MainWindow(QMainWindow):
         self.filter = _combo({"all": "All songs", "draft": "Not checked yet", "reviewed": "Checked"})
         self.filter.currentIndexChanged.connect(self.refresh_list)
         self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)  # Ctrl/Shift-click to pick several
         self.list.currentItemChanged.connect(self._selected)
+        self.list.itemSelectionChanged.connect(self._selection_changed)
+        self.list.setContextMenuPolicy(Qt.ActionsContextMenu)
         self.count = QLabel()
         self.count.setProperty("class", "caption")
         left = QWidget()
@@ -774,10 +838,29 @@ class MainWindow(QMainWindow):
         a = QAction("Quit", self)
         a.triggered.connect(self.close)
         m.addAction(a)
-        s = self.menuBar().addMenu("&Song")
-        a = QAction("Delete this song", self)
-        a.triggered.connect(self.delete_song)
+        s = self.menuBar().addMenu("&Songs")
+        self.delete_action = QAction("Delete selected songs…", self)
+        self.delete_action.setShortcut(QKeySequence.Delete)
+        self.delete_action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        self.delete_action.triggered.connect(self.delete_song)
+        self.list.addAction(self.delete_action)  # Delete key works in the song list
+        s.addAction(self.delete_action)
+        a = QAction("Select all songs in the list", self)
+        a.setShortcut(QKeySequence.SelectAll)
+        a.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        a.triggered.connect(self.list.selectAll)
+        self.list.addAction(a)
         s.addAction(a)
+        s.addSeparator()
+        a = QAction("Make a songbook (PDF to print)…", self)
+        a.triggered.connect(lambda: self.make_book("book"))
+        s.addAction(a)
+        self.list.addAction(a)
+        a = QAction("Export PDFs to a folder (for MobileSheets)…", self)
+        a.triggered.connect(lambda: self.make_book("export"))
+        s.addAction(a)
+        self.list.addAction(a)
+        self.book_job = None
         h = self.menuBar().addMenu("&Help")
         a = QAction("Show import log", self)
         a.triggered.connect(self.show_log)
@@ -819,7 +902,9 @@ class MainWindow(QMainWindow):
                 self.list.setCurrentItem(it)
         self.list.blockSignals(False)
         reviewed = sum(1 for e in entries if e.status == "reviewed")
-        self.count.setText(f"{len(entries)} songs · {reviewed} checked")
+        self._count_text = f"{len(entries)} songs · {reviewed} checked" + (
+            f" · {shown} shown" if shown != len(entries) else "")
+        self.count.setText(self._count_text)
         if not entries:
             running = self.import_thread is not None and self.import_thread.isRunning()
             self.empty.setText(
@@ -853,14 +938,131 @@ class MainWindow(QMainWindow):
             self.song_view.song = self.lib.load_song(self.song_view.song_id)
             self.song_view.render()
 
+    def _selection_changed(self):
+        n = len(self.list.selectedItems())
+        self.count.setText(getattr(self, "_count_text", "") + (f" · {n} selected" if n > 1 else ""))
+
     def delete_song(self):
-        it = self.list.currentItem()
-        if not it:
+        items = self.list.selectedItems() or ([self.list.currentItem()] if self.list.currentItem() else [])
+        if not items:
             return
-        if QMessageBox.question(self, "Delete song", f"Delete “{it.text().split('   ·')[0]}” from the library? "
-                                "The PDF itself is not touched.") == QMessageBox.Yes:
+        titles = [it.text().split("   ·")[0] for it in items]
+        if len(items) == 1:
+            question = f"Delete “{titles[0]}” from the library?"
+        else:
+            shown = ", ".join(f"“{t}”" for t in titles[:6]) + (f" and {len(titles) - 6} more" if len(titles) > 6 else "")
+            question = f"Delete these {len(items)} songs from the library?\n\n{shown}"
+        box = QMessageBox(QMessageBox.Question, "Delete songs", question, QMessageBox.Yes | QMessageBox.Cancel, self)
+        box.setInformativeText("Your PDFs and song packs are not touched; OpenBook tunes can be added again from "
+                               "the song pack.")
+        box.button(QMessageBox.Yes).setText(f"Delete {len(items)} song{'s' if len(items) > 1 else ''}")
+        box.setDefaultButton(QMessageBox.Cancel)
+        if box.exec() != QMessageBox.Yes:
+            return
+        row = self.list.row(items[0])
+        for it in items:
             self.lib.delete_song(it.data(Qt.UserRole))
-            self.refresh_list()
+        log.info("deleted %d songs", len(items))
+        self.song_view.song_id = None
+        self.refresh_list()
+        if self.list.count():
+            self.list.setCurrentRow(min(row, self.list.count() - 1))
+
+    # ---- songbook and PDF export
+    def _chosen_songs(self) -> tuple[list[str], str]:
+        sel = self.list.selectedItems()
+        if len(sel) > 1:
+            return [it.data(Qt.UserRole) for it in sel], "the selected tunes"
+        ids = [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())]
+        filtered = bool(self.search.text().strip()) or self.filter.currentData() != "all"
+        return ids, ("all tunes shown in the list" if filtered else "your whole library") + \
+            " — select several with Ctrl-click to choose fewer"
+
+    def make_book(self, kind: str):
+        if self.book_job is not None and self.book_job.isRunning():
+            QMessageBox.information(self, "Busy", "A songbook or export is already being made. Wait for it to finish.")
+            return
+        ids, scope = self._chosen_songs()
+        if not ids:
+            QMessageBox.information(self, "No songs", "There are no songs in the list.")
+            return
+        dlg = BookDialog(self, kind, len(ids), scope, self.song_view, self.settings)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        opts = dlg.options()
+        start = self.settings.get("last_export_dir", "")
+        if kind == "book":
+            name = f"{opts.title}.pdf"
+            target, _ = QFileDialog.getSaveFileName(self, "Save songbook", str(Path(start) / name) if start else name,
+                                                    "PDF (*.pdf)")
+            if not target:
+                return
+            self.settings["last_export_dir"] = str(Path(target).parent)
+            self.settings["book"] = {"title": opts.title, "subtitle": opts.subtitle, "owner": opts.owner,
+                                     "glossary": opts.glossary, "composer_index": opts.composer_index,
+                                     "no_page_turns": opts.no_page_turns}
+        else:
+            target = QFileDialog.getExistingDirectory(self, "Folder for the PDFs", start)
+            if not target:
+                return
+            self.settings["last_export_dir"] = target
+        save_settings(self.settings)
+        songs = []
+        for sid in ids:
+            try:
+                songs.append((sid, self.lib.load_song(sid)))
+            except (OSError, ValueError):
+                log.warning("could not read song %s", sid)
+        log.info("%s requested: %d songs -> %s", kind, len(songs), target)
+        self.book_job = BookJob(kind, songs, opts, Path(target), self.lib.root / "cache")
+        self.book_progress = QProgressDialog("Starting…", "Stop", 0, 100, self)
+        self.book_progress.setWindowTitle("Making the songbook" if kind == "book" else "Exporting PDFs")
+        self.book_progress.setMinimumWidth(460)
+        self.book_progress.setMinimumDuration(0)
+        self.book_progress.setAutoClose(False)
+        self.book_progress.setAutoReset(False)
+        self.book_progress.canceled.connect(self.book_job.cancel)
+        self.book_job.progress.connect(self._book_progress)
+        self.book_job.done.connect(lambda res, k=kind, t=target: self._book_done(k, res, t))
+        self.book_job.failed.connect(self._book_failed)
+        KEEPER.start(self.book_job)
+        self.book_progress.show()
+
+    def _book_progress(self, done: int, total: int, msg: str):
+        if self.book_progress.wasCanceled():
+            return
+        self.book_progress.setMaximum(max(1, total))
+        self.book_progress.setValue(min(done, total))
+        self.book_progress.setLabelText(msg)
+
+    def _book_failed(self, msg: str):
+        self.book_progress.close()
+        log.error("songbook/export failed: %s", msg)
+        QMessageBox.warning(self, "Could not finish", msg.split("\n\nTraceback")[0].strip()[:600]
+                            + "\n\nDetails are in the app log (Help → Show app log).")
+
+    def _book_done(self, kind: str, res, target: str):
+        self.book_progress.close()
+        if res is None:
+            QMessageBox.information(self, "Stopped", "Stopped. Tunes engraved so far are kept, so starting again "
+                                    "continues quickly.")
+            return
+        if kind == "book":
+            skipped = res.skipped
+            text = (f"Your songbook is ready: {res.songs} tunes, {res.pages} pages.\n\n{res.path}\n\n"
+                    "Open it to print (double-sided works best).")
+        else:
+            files, skipped = res
+            text = f"{len(files)} PDFs saved in\n{target}"
+        if skipped:
+            text += f"\n\nLeft out ({len(skipped)}): " + "; ".join(f"{t} ({why})" for t, why in skipped[:8]) + (
+                "…" if len(skipped) > 8 else "")
+            log.warning("%s left out: %s", kind, skipped)
+        box = QMessageBox(QMessageBox.Information, "Done", text, QMessageBox.Ok, self)
+        open_btn = box.addButton("Open songbook" if kind == "book" else "Open folder", QMessageBox.ActionRole)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(res.path if kind == "book" else target)))
 
     # ---- import
     def import_pdf(self):
@@ -1005,6 +1207,8 @@ class MainWindow(QMainWindow):
             "Engraving: GNU LilyPond."))
 
     def closeEvent(self, ev):
+        if self.book_job is not None and self.book_job.isRunning():
+            self.book_job.cancel()
         if self.import_thread and self.import_thread.isRunning():
             self.import_thread.cancel()
             self.import_thread.wait(30000)
