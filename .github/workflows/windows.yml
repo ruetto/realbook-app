@@ -25,6 +25,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      - name: Diagnose tab string requests
+        run: python tools/diag_tab.py
+
       - name: Run tests
         run: python -m pytest -q tests
 
