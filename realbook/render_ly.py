@@ -309,7 +309,9 @@ def compile_pdf(ly_source: str, out_pdf: Path, png_preview: Path | None = None, 
         if r.returncode != 0:
             raise RuntimeError(r.stderr[-3000:])
         # any engraving warning (e.g. a note LilyPond can't put on the requested string) is treated as an error
-        warnings = [l for l in r.stderr.splitlines() if "warning" in l.lower() and "unsupported formats" not in l]
+        layout_only = ("unsupported formats", "compressing over-full page", "has been compressed")
+        warnings = [l for l in r.stderr.splitlines()
+                    if "warning" in l.lower() and not any(x in l for x in layout_only)]
         if warnings and strict:
             raise RuntimeError("LilyPond warnings:\n" + "\n".join(warnings[:20]))
         out_pdf.parent.mkdir(parents=True, exist_ok=True)

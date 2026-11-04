@@ -96,12 +96,26 @@ def one(slug):
             mono.append((st, p, d))
             end = st + d
         m = mono
-        # grace notes have (near) zero length in MIDI: the converter leaves them out on purpose
-        m = [x for x in m if x[2] >= F(1, 48)]
         s = song_notes(song)
-        mism = [(a, b) for a, b in zip(m, s) if a != b]
-        return {"slug": slug, "midi": len(m), "song": len(s), "mismatch": len(mism) + abs(len(m) - len(s)),
-                "first": [(str(a), str(b)) for a, b in mism[:3]]}
+        # Align by pitch. LilyPond's MIDI performs things a lead sheet doesn't encode, so allow exactly these:
+        #  * staccato and similar shorten a note (MIDI length between 1/4 of the written length and the full length),
+        #  * grace notes appear as extra short notes (under 1/4 beat) and may delay the main note by that much.
+        # Anything else (a wrong pitch, a missing or extra written note, a note in the wrong place) fails.
+        import difflib
+
+        sm = difflib.SequenceMatcher(None, [x[1] for x in m], [x[1] for x in s], autojunk=False)
+        bad = []
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                for (mt, mp, md), (st, sp, sd) in zip(m[i1:i2], s[j1:j2]):
+                    if abs(mt - st) > F(1, 4) or md > sd or md < sd / 4 - F(1, 8):
+                        bad.append(((mt, mp, md), (st, sp, sd)))
+            else:
+                extra_midi = m[i1:i2]
+                if j2 > j1 or any(d >= F(1, 4) for _, _, d in extra_midi):
+                    bad.append((m[i1:i2][:1], s[j1:j2][:1]))
+        return {"slug": slug, "midi": len(m), "song": len(s), "mismatch": len(bad),
+                "first": [(str(a), str(b)) for a, b in bad[:3]]}
     except Exception as e:
         return {"slug": slug, "error": str(e)[:300]}
 

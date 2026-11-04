@@ -259,7 +259,8 @@ def convert(events: Path, md: dict) -> tuple[dict, list[str]]:
             continue
         e = notes[0]
         bar = e["bar"] if e["pos"] >= 0 else 0
-        beat = (e["pos"] if e["pos"] >= 0 else e["pos"] + pickup) * 4
+        # measurePosition is in whole notes; in a pickup bar it runs from -pickup to 0
+        beat = e["pos"] * 4 if e["pos"] >= 0 else e["pos"] * 4 + pickup
         sym, ok, want = name_chord(notes)
         if not ok:
             bad += 1

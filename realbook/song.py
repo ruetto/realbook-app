@@ -85,15 +85,16 @@ class Song:
         problems = []
         for i, (b, ts) in enumerate(zip(self.bars, self.bar_times())):
             per_bar = ts[0] * 4 / ts[1]
+            blen = self.pickup if (i == 0 and self.pickup) else per_bar
+            for ev in b.chords:
+                if not 0 <= ev.beat < blen:
+                    problems.append(f"bar {i + 1}: chord {ev.chord.symbol} at impossible beat {ev.beat}")
             if i == 0 and self.pickup:
                 if abs(b.beats - self.pickup) > 1e-6:
                     problems.append(f"pickup bar: notes add up to {b.beats} beats, not {self.pickup}")
                 continue
             if abs(b.beats - per_bar) > 1e-6 and i != len(self.bars) - 1:
                 problems.append(f"bar {i + 1}: notes add up to {b.beats} beats, not {per_bar}")
-            for ev in b.chords:
-                if not 0 <= ev.beat < max(per_bar, self.pickup if i == 0 else 0):
-                    problems.append(f"bar {i + 1}: chord {ev.chord.symbol} at impossible beat {ev.beat}")
         return problems
 
     # ------------------------------------------------------------ transposition
