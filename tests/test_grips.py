@@ -56,3 +56,30 @@ def test_voicings_come_from_the_vocabulary_and_fit_the_hand(fixture, key):
             assert max(fr) - min(fr) <= 3, (style, ch.symbol, _shape(v))
             if style in ("drop3", "shell") and ("seventh" in ch.tones or "sixth" in ch.tones):
                 assert _is_grip(ch, style, v, TUNINGS["standard"]), (style, ch.symbol, _shape(v))
+
+
+@pytest.mark.parametrize("fixture", ["test_tune.json", "minor_test.json"])
+@pytest.mark.parametrize("key", ["C", "Db", "E", "G", "Bb"])
+def test_comping_shapes_are_small(fixture, key):
+    """Shells: root, 3rd, 7th (m7b5/dim7 add their 5th). Rootless: three notes. Hands stay in one area."""
+    s = load(FIX / fixture).transposed(key)
+    for style in ("shell", "rootless"):
+        arr = arrange(s, style, "standard")
+        prev = None
+        for _, ch, v in arr.voicings:
+            n = sum(f is not None for f in v.frets)
+            limit = 4 if style == "shell" and ch.family() in ("hdim", "dim") else 3
+            assert n <= limit, (style, ch.symbol, _shape(v))
+            assert v.span <= 3 and (v.span <= 2 or style == "rootless"), (style, ch.symbol, _shape(v))
+            if style == "shell" and ("seventh" in ch.tones or "sixth" in ch.tones):
+                assert v.degrees[[i for i, f in enumerate(v.frets) if f is not None][0]] == "1"
+            if prev is not None:
+                assert abs(v.avg_fret - prev.avg_fret) <= 6, (style, ch.symbol)
+            prev = v
+
+
+def test_shells_are_the_textbook_ones():
+    from realbook.chords import parse_chord
+    for sym, want in {"Cmaj7": "x 3 2 4 x x", "C7": "8 x 8 9 x x", "C-7": "x 3 1 3 x x", "C6": "8 x 7 9 x x",
+                      "C-7b5": "8 x 8 8 7 x", "C7b9": "x 3 2 3 x x", "C13": "8 x 8 9 x x"}.items():
+        assert want in {_shape(v) for v in candidates(parse_chord(sym), "shell", TUNINGS["standard"])}, sym

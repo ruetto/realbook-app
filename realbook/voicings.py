@@ -14,10 +14,10 @@ from dataclasses import dataclass
 from .chords import DEGREE_SEMIS, Chord
 
 STYLES = {
-    "shell": "Shells (root, 3rd, 7th, plus the defining alteration)",
+    "shell": "Shells (root, 3rd, 7th)",
     "drop2": "Drop-2",
     "drop3": "Drop-3",
-    "rootless": "Rootless (3rd, 7th, 9th, 5th or 13th)",
+    "rootless": "Rootless (3rd, 7th and one colour tone)",
 }
 
 TUNINGS = {
@@ -28,7 +28,7 @@ TUNINGS = {
 }
 
 MAX_FRET = 15
-ENGINE_VERSION = 2  # part of every cache key: bump whenever the chosen voicings or fingerings can change
+ENGINE_VERSION = 3  # part of every cache key: bump whenever the chosen voicings or fingerings can change
 FALLBACKS: list[tuple[str, str, str]] = []  # (chord, requested style, style used) for the last progression
 MAX_SPAN = 3  # frets between lowest and highest fretted note: a four-fret hand position
 GRIP_STYLES = ("drop3", "shell")
@@ -93,44 +93,29 @@ def style_tones(ch: Chord, style: str) -> tuple[list[str], str | None]:
     bass_req = "1"
 
     if fam == "dim" and t.get("seventh") == "bb7":
-        full = ["1", "b3", "b5", "bb7"]
-        if style == "shell":
-            return full, "1"
-        return full, ("1" if style == "drop3" else None)
+        if style == "rootless":
+            return ["b3", "b5", "bb7"], None
+        return ["1", "b3", "b5", "bb7"], ("1" if style in ("drop3", "shell") else None)
 
     if "ninth_2" in t:  # altered dominant: 3, b7, #9, b13 (or b9)
-        alt = [third, "b7", t["ninth_2"], t.get("thirteenth", t.get("ninth", "b9"))]
         if style == "shell":
-            return ["1", third, "b7", t["ninth_2"]], "1"
+            return ["1", third, "b7"], "1"
         if style == "drop3":
             return ["1", third, "b7", t["ninth_2"]], "1"
-        return alt, None
+        if style == "rootless":
+            return [third, "b7", t["ninth_2"]], None
+        return [third, "b7", t["ninth_2"], t.get("thirteenth", t.get("ninth", "b9"))], None
 
     if seventh is None:  # plain triad (Bb, F-, C+, Esus4): play exactly the three written notes
         tones = ["1", third, t.get("fifth", "5")]
-        if "ninth" in t:  # add9 chords keep the 9th
+        if "ninth" in t and style not in ("shell", "rootless"):  # add9 chords keep the 9th
             tones.append(t["ninth"])
-        return tones, ("1" if style in ("shell", "drop3") else None)
+        return tones, ("1" if style == "drop3" else None)
 
-    if style == "shell":
+    if style == "shell":  # guide tones only: root, 3rd, 7th (half-diminished keeps its b5)
         tones = ["1", third, seventh]
-        extra = None
-        if t.get("fifth") in ("b5", "#5"):
-            extra = t["fifth"]
-        elif t.get("ninth") in ("b9", "#9"):
-            extra = t["ninth"]
-        elif t.get("eleventh") == "#11":
-            extra = "#11"
-        elif t.get("thirteenth") == "b13":
-            extra = "b13"
-        elif "thirteenth" in t:
-            extra = t["thirteenth"]
-        elif "eleventh" in t:
-            extra = t["eleventh"]
-        elif "ninth" in t:
-            extra = t["ninth"]
-        if extra:
-            tones.append(extra)
+        if fam == "hdim":
+            tones.append("b5")
         return tones, "1"
 
     if style == "drop2":
@@ -140,19 +125,25 @@ def style_tones(ch: Chord, style: str) -> tuple[list[str], str | None]:
     if style == "drop3":
         return ["1", third, _fifth_slot(t, fam, for_drop3=True), seventh], "1"
 
-    if style == "rootless":
-        if "ninth" in t:
-            nine = t["ninth"]
-        elif fam == "hdim":
-            nine = "11"
-        else:
-            nine = "9"
-        five = _fifth_slot(t, fam)
-        if fam == "dom" and five == "5":
-            five = "13"
-        if five == nine or DEGREE_SEMIS[five] % 12 == DEGREE_SEMIS[nine] % 12:
-            five = t.get("fifth", "5")
-        return [third, seventh, nine, five], None
+    if style == "rootless":  # 3rd and 7th plus one colour tone: the chord's alteration if it has one
+        colour = None
+        for role, alts in (("ninth", ("b9", "#9")), ("thirteenth", ("b13",)), ("fifth", ("#5", "b5")),
+                           ("eleventh", ("#11",))):
+            if t.get(role) in alts:
+                colour = t[role]
+                break
+        if colour is None:
+            if fam == "hdim":
+                colour = "b5"
+            elif fam in ("dom", "sus"):
+                colour = "9" if ("ninth" in t and "thirteenth" not in t) else "13"
+            elif "sixth" in t and "ninth" not in t:
+                colour = "9" if fam == "min" else "5"
+            else:
+                colour = t.get("ninth", "9")
+        if DEGREE_SEMIS[colour] % 12 in (DEGREE_SEMIS[third] % 12, DEGREE_SEMIS[seventh] % 12):
+            colour = t.get("fifth", "5")
+        return [third, seventh, colour], None
 
     raise ValueError(style)
 
@@ -161,9 +152,8 @@ def style_tones(ch: Chord, style: str) -> tuple[list[str], str | None]:
 
 def _string_sets(style: str, n_notes: int, n_strings: int) -> list[tuple[int, ...]]:
     sets = []
-    if n_notes == 3:
-        # triads: three adjacent strings (root-in-bass styles also allow a skipped string above the bass)
-        return [tuple(range(i, i + 3)) for i in range(0, n_strings - 2)]  # close triads on adjacent strings
+    if n_notes == 3:  # close three-note shapes on adjacent strings (rootless ones off the low E)
+        return [tuple(range(i, i + 3)) for i in range(1, n_strings - 2)]  # never the muddy E-A-D set
     if style == "drop2":
         sets = [tuple(range(i, i + 4)) for i in range(0, n_strings - 3)]
     elif style == "drop3":
@@ -259,7 +249,10 @@ def _search(ch: Chord, style: str, tuning: list[int], allow_open: bool = True) -
 def _local_cost(v: Voicing, style: str) -> float:
     c = 0.0
     c += 0.2 * max(0.0, v.avg_fret - 8)          # stay in the lower-middle of the neck
-    c += {3: 2.0, 2: 0.15}.get(v.span, 0.0)       # a four-fret stretch only when nothing easier fits
+    c += {3: 3.0, 2: 0.3}.get(v.span, 0.0)        # comping shapes stay small; four frets only if nothing else
+    c += 0.25 * max(0.0, 3 - v.avg_fret)          # the first frets mean awkward reaches past the nut
+    if style in ("shell", "rootless"):
+        c += 0.12 * abs(v.avg_fret - 6)           # comp in one area of the neck (around frets 3-9)
     c += 0.6 * sum(1 for f in v.frets if f == 0)  # open strings ring on and sound un-jazzy
     if style == "drop2" and v.frets[0] is not None:
         c += 0.8                                  # drop-2 on the bottom four strings is muddy
@@ -273,7 +266,8 @@ def _move_cost(a: Voicing, b: Voicing) -> float:
         vl = sum(abs(x - y) for x, y in zip(a.midi, b.midi))
     else:
         vl = sum(min(abs(x - y) for y in b.midi) for x in a.midi) + 3
-    return 0.15 * vl + 0.4 * abs(a.avg_fret - b.avg_fret) + 0.2 * max(0, abs(a.midi[-1] - b.midi[-1]) - 5)
+    # hand movement matters most when comping: chords should change with the fingers, not with the arm
+    return 0.12 * vl + 0.7 * abs(a.avg_fret - b.avg_fret) + 0.2 * max(0, abs(a.midi[-1] - b.midi[-1]) - 5)
 
 
 def voice_progression(chords: list[Chord], style: str, tuning: list[int], allow_open: bool = True) -> list[Voicing]:
@@ -346,7 +340,11 @@ def verify(ch: Chord, style: str, v: Voicing, tuning: list[int]) -> list[str]:
     if sev and sev not in sounding:
         problems.append(f"missing 7th/6th ({sev})")
     alterations = {d for r, d in t.items() if d in ("b5", "#5", "b9", "#9", "#11", "b13")}
-    if grip:
+    if style == "shell" or (style == "rootless" and len(played) == 3):
+        # shells sound the guide tones only; three-note rootless shapes carry one colour tone
+        if style == "rootless" and alterations and not alterations & sounding and ch.family() != "hdim":
+            problems.append(f"none of the alterations {sorted(alterations)} sounds")
+    elif grip:
         if alterations and not alterations & sounding:
             problems.append(f"none of the alterations {sorted(alterations)} sounds")
     else:
@@ -378,7 +376,7 @@ def _is_grip(ch: Chord, style: str, v: Voicing, tuning: list[int]) -> bool:
     from .grips import GRIPS, place
 
     for g in GRIPS:
-        if style in g.sets or "triad" in g.sets:
+        if style in g.sets:
             if any(frets == v.frets for frets, _, _ in place(g, ch, tuning, True, MAX_FRET)):
                 return True
     return False

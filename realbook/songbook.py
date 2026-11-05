@@ -38,7 +38,7 @@ class BookOptions:
     title: str = "Jazz Standards"
     subtitle: str = "Lead sheets for guitar"
     owner: str = ""
-    style: str = "drop3"
+    style: str = "shell"
     tuning: str = "standard"
     open_strings: str = "avoid"
     position: str | int = "auto"

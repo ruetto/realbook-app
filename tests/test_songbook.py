@@ -68,7 +68,7 @@ def test_songbook_index_points_at_each_tune(book):
 
 def test_glossary_has_every_voicing(book):
     res, _ = book
-    arrs = [arrange(from_dict(d), "drop3", "standard") for _, d in _songs()]
+    arrs = [arrange(from_dict(d), BookOptions().style, "standard") for _, d in _songs()]
     items = collect_glossary(arrs)
     assert res.glossary_voicings == len(items)
     used = {(ch.symbol.strip("()"), tuple(v.frets)) for a in arrs for _, ch, v in a.voicings}

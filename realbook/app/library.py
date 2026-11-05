@@ -17,7 +17,7 @@ from pathlib import Path
 
 DEFAULT_SETTINGS = {
     "library": None,  # chosen by the user on first start; never picked silently
-    "style": "drop3",
+    "style": "shell",
     "tuning": "standard",
     "open_strings": "avoid",
     "position": "auto",
@@ -43,6 +43,10 @@ def load_settings() -> dict:
         s.update(json.loads(settings_file().read_text(encoding="utf-8")))
     except (OSError, ValueError):
         pass
+    if s.get("voicing_defaults", 0) < 3:
+        # Nov 2026: comping shapes became the default (shells); earlier versions defaulted to drop-3 grips
+        s["style"] = "shell"
+        s["voicing_defaults"] = 3
     if os.environ.get("RBG_LIBRARY"):
         s["library"] = os.environ["RBG_LIBRARY"]
     return s
