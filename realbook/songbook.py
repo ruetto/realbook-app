@@ -23,6 +23,7 @@ from .engraver import lilypond_exe
 from .render_ly import (FRET_FUNCTION, LY_VERSION, NOTE_NAMES, STYLES, Arrangement, arrange, chord_name_markup,
                         compile_pdf, diagram_markup, paper_block, song_parts)
 from .song import from_dict
+from .voicings import ENGINE_VERSION
 
 BOOK_VERSION = "book-1"  # bump when the engraved output of the songbook changes
 N_GROUPS = 64  # songs are spread over this many cached groups by a stable hash of their id
@@ -502,7 +503,8 @@ def engrave_songs(songs: list[tuple[str, dict]], opts: BookOptions, cache_dir: P
     for sid, data in songs:
         if sid in arrs:
             groups.setdefault(_group_of(sid), []).append((sid, data))
-    opt_key = [opts.style, opts.tuning, opts.open_strings, str(opts.position), BOOK_VERSION, LY_VERSION]
+    opt_key = [opts.style, opts.tuning, opts.open_strings, str(opts.position), BOOK_VERSION, LY_VERSION,
+               ENGINE_VERSION]
     jobs = []
     for g, members in groups.items():
         members.sort(key=lambda m: m[0])

@@ -1,9 +1,9 @@
 """Guitar voicing engine: shells, drop-2, drop-3 and rootless voicings for any tuning.
 
-Voicings are not looked up in a table. For each chord the engine decides which chord
-tones the style calls for, then searches the fretboard for every placement that sounds
-exactly those tones in the style's vertical order and is physically playable. A
-progression is then voiced by choosing, among all candidates, the sequence with the
+Root-in-the-bass styles (drop-3 and shells) use the vocabulary of standard jazz grips in grips.py.
+Drop-2 and rootless voicings are found by searching the fretboard for the style's exact structure
+(these structures are the standard ones by definition) within a four-fret hand position.
+A progression is then voiced by choosing, among all candidates, the sequence with the
 smoothest voice leading and least hand movement (Viterbi search).
 """
 from __future__ import annotations
@@ -28,8 +28,10 @@ TUNINGS = {
 }
 
 MAX_FRET = 15
+ENGINE_VERSION = 2  # part of every cache key: bump whenever the chosen voicings or fingerings can change
 FALLBACKS: list[tuple[str, str, str]] = []  # (chord, requested style, style used) for the last progression
-MAX_SPAN = 4  # frets between lowest and highest fretted note (4 = a five-fret stretch)
+MAX_SPAN = 3  # frets between lowest and highest fretted note: a four-fret hand position
+GRIP_STYLES = ("drop3", "shell")
 
 
 @dataclass(frozen=True)
@@ -159,12 +161,9 @@ def style_tones(ch: Chord, style: str) -> tuple[list[str], str | None]:
 
 def _string_sets(style: str, n_notes: int, n_strings: int) -> list[tuple[int, ...]]:
     sets = []
-    if n_notes == 3 and style != "shell":
+    if n_notes == 3:
         # triads: three adjacent strings (root-in-bass styles also allow a skipped string above the bass)
-        sets = [tuple(range(i, i + 3)) for i in range(0, n_strings - 2)]
-        if style == "drop3":
-            sets += [(i, i + 2, i + 3) for i in range(0, n_strings - 3)]
-        return sets
+        return [tuple(range(i, i + 3)) for i in range(0, n_strings - 2)]  # close triads on adjacent strings
     if style == "drop2":
         sets = [tuple(range(i, i + 4)) for i in range(0, n_strings - 3)]
     elif style == "drop3":
@@ -184,22 +183,41 @@ def _string_sets(style: str, n_notes: int, n_strings: int) -> list[tuple[int, ..
 def _structure_ok(style: str, p: list[int]) -> bool:
     if any(b <= a for a, b in zip(p, p[1:])):
         return False  # voices must ascend from low string to high string
-    if len(p) == 3 and style != "shell":
-        return p[-1] - p[0] <= 16  # triad: compact, within about an octave and a third
+    if len(p) == 3:
+        return p[-1] - p[0] <= 12  # close or first-inversion triad within an octave
     if style == "drop2":
         q = p[0] + 12
         return p[2] < q < p[3] and max(p[1:] + [q]) - min(p[1:] + [q]) < 12
     if style == "drop3":
         q = p[0] + 12
         return p[1] < q < p[2] and max(p[1:] + [q]) - min(p[1:] + [q]) < 12
-    if style == "rootless":
-        return p[-1] - p[0] <= 14
+    if style == "rootless":  # close position, or its drop-2 spread (how guitarists play them)
+        if p[-1] - p[0] <= 11:
+            return True
+        q = p[0] + 12
+        return p[2] < q < p[3] and max(p[1:] + [q]) - min(p[1:] + [q]) < 12
     if style == "shell":
         return p[-1] - p[0] <= 24
     return True
 
 
 def candidates(ch: Chord, style: str, tuning: list[int], allow_open: bool = True) -> list[Voicing]:
+    if style in GRIP_STYLES:
+        from .grips import best_grips, place
+
+        out, seen = [], set()
+        for g in best_grips(ch, style):
+            for frets, labels, midi in place(g, ch, tuning, allow_open, MAX_FRET):
+                if frets not in seen:
+                    seen.add(frets)
+                    out.append(Voicing(frets, labels, midi))
+        if out:
+            return out
+        # no standard grip (e.g. a diminished or add9 triad): close voicing on adjacent strings below
+    return _search(ch, style, tuning, allow_open)
+
+
+def _search(ch: Chord, style: str, tuning: list[int], allow_open: bool = True) -> list[Voicing]:
     degrees, bass_req = style_tones(ch, style)
     n = len(degrees)
     root_pc = ch.root.pc
@@ -241,7 +259,7 @@ def candidates(ch: Chord, style: str, tuning: list[int], allow_open: bool = True
 def _local_cost(v: Voicing, style: str) -> float:
     c = 0.0
     c += 0.2 * max(0.0, v.avg_fret - 8)          # stay in the lower-middle of the neck
-    c += {4: 1.5, 3: 0.3}.get(v.span, 0.0)       # wide stretches are harder
+    c += {3: 2.0, 2: 0.15}.get(v.span, 0.0)       # a four-fret stretch only when nothing easier fits
     c += 0.6 * sum(1 for f in v.frets if f == 0)  # open strings ring on and sound un-jazzy
     if style == "drop2" and v.frets[0] is not None:
         c += 0.8                                  # drop-2 on the bottom four strings is muddy
@@ -313,7 +331,10 @@ def verify(ch: Chord, style: str, v: Voicing, tuning: list[int]) -> list[str]:
         if (m - ch.root.pc) % 12 != DEGREE_SEMIS[d] % 12:
             problems.append(f"string {6 - s}: fret {f} is not the {d} of {ch.symbol}")
     want, bass_req = style_tones(ch, style)
-    if sorted(d for _, _, d in played) != sorted(want):
+    grip = style in GRIP_STYLES and _is_grip(ch, style, v, tuning)
+    if grip:
+        bass_req = "1"
+    elif sorted(d for _, _, d in played) != sorted(want):
         problems.append(f"voices {sorted(d for _, _, d in played)} != required {sorted(want)}")
     t = ch.tones
     sounding = {d for _, _, d in played}
@@ -324,10 +345,15 @@ def verify(ch: Chord, style: str, v: Voicing, tuning: list[int]) -> list[str]:
     sev = t.get("seventh") or t.get("sixth")
     if sev and sev not in sounding:
         problems.append(f"missing 7th/6th ({sev})")
-    if t.get("fifth") in ("b5", "#5") and t["fifth"] not in sounding:
-        problems.append(f"missing altered fifth {t['fifth']}")
-    if t.get("ninth") in ("b9", "#9") and style != "shell" and not ({"b9", "#9"} & sounding):
-        problems.append("missing altered ninth")
+    alterations = {d for r, d in t.items() if d in ("b5", "#5", "b9", "#9", "#11", "b13")}
+    if grip:
+        if alterations and not alterations & sounding:
+            problems.append(f"none of the alterations {sorted(alterations)} sounds")
+    else:
+        if t.get("fifth") in ("b5", "#5") and t["fifth"] not in sounding:
+            problems.append(f"missing altered fifth {t['fifth']}")
+        if t.get("ninth") in ("b9", "#9") and style != "shell" and not ({"b9", "#9"} & sounding):
+            problems.append("missing altered ninth")
     # nothing outside the chord or its standard tensions
     allowed = {(ch.root.pc + DEGREE_SEMIS[d]) % 12 for d in t.values()}
     tensions = {"maj": ("9", "13"), "min": ("9", "11"), "dom": ("9", "13"), "sus": ("9", "13"), "hdim": ("11",), "dim": ()}
@@ -337,7 +363,7 @@ def verify(ch: Chord, style: str, v: Voicing, tuning: list[int]) -> list[str]:
             problems.append(f"note {m} not in chord {ch.symbol}")
     if bass_req and v.degrees[[i for i, f in enumerate(v.frets) if f is not None][0]] != bass_req:
         problems.append("wrong bass note")
-    if not _structure_ok(style, list(midi)):
+    if not grip and not _structure_ok(style, list(midi)):
         problems.append(f"not a valid {style} structure")
     fr = [f for _, f, _ in played if f > 0]
     if fr and max(fr) - min(fr) > MAX_SPAN:
@@ -345,3 +371,14 @@ def verify(ch: Chord, style: str, v: Voicing, tuning: list[int]) -> list[str]:
     if any(f > MAX_FRET for _, f, _ in played):
         problems.append("too high on the neck")
     return problems
+
+
+def _is_grip(ch: Chord, style: str, v: Voicing, tuning: list[int]) -> bool:
+    """True if v is one of the standard grips (grips.py) placed for this chord."""
+    from .grips import GRIPS, place
+
+    for g in GRIPS:
+        if style in g.sets or "triad" in g.sets:
+            if any(frets == v.frets for frets, _, _ in place(g, ch, tuning, True, MAX_FRET)):
+                return True
+    return False

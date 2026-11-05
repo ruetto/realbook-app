@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from ..render_ly import arrange, compile_pdf, to_lilypond
 from ..song import from_dict
+from ..voicings import ENGINE_VERSION
 
 
 class _Thread(QThread):
@@ -38,7 +39,7 @@ class RenderJob(_Thread):
         key = hashlib.sha1(json.dumps([self.song_data.get("bars"), self.song_data.get("key"),
                                        self.song_data.get("title"), self.song_data.get("style"),
                                        self.song_data.get("composer"), self.song_data.get("line_breaks"),
-                                       self.opts], sort_keys=True).encode()).hexdigest()[:16]
+                                       self.opts, ENGINE_VERSION], sort_keys=True).encode()).hexdigest()[:16]
         out = self.cache_dir / f"{key}.pdf"
         if out.exists():
             self.done.emit(str(out), [])
